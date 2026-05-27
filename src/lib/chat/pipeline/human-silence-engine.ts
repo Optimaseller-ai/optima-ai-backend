@@ -101,10 +101,14 @@ export function pickEndingHumanReply(args: {
   return { reply, noFollowUp: true, reason: "conversation_ending" };
 }
 
+const COMMERCIAL_IN_MESSAGE =
+  /\b(produit|produits|catalogue|service|services|prix|stock|dispo|commander|acheter|livraison|article|vous\s+avez|quoi\s+comme)\b/i;
+
 export function detectWeakUserMessage(message: string): WeakUserSignal {
   const m = String(message ?? "").trim();
   const n = norm(m);
   if (!n) return { weak: true, kind: "short", reason: "empty" };
+  if (COMMERCIAL_IN_MESSAGE.test(n)) return { weak: false, kind: "unknown", reason: "commercial_intent" };
   if (/^[\p{Extended_Pictographic}\uFE0F\s]+$/u.test(m)) return { weak: true, kind: "emoji_only", reason: "emoji_only" };
   if (/^(ok|okay|daccord|d'accord|dac|ah d'accord|je vois|bon|oui|non|ça marche|ca marche)$/i.test(n))
     return { weak: true, kind: "ack", reason: "ack_phrase" };

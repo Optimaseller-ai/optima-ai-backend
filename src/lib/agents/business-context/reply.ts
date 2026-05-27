@@ -28,6 +28,7 @@ import {
 import { classifyProspectSalesIntent } from "@/lib/agents/sales/prospect-intent-classifier";
 import { buildHumanSalesMemoryCallback } from "@/lib/agents/memory/human-sales-memory";
 import { optimaLog } from "@/lib/logging/optima-logger";
+import { logStructured } from "@/lib/logging/structured-log";
 import { classifyConversationEmotion } from "@/lib/agents/emotional-intelligence/conversation-emotion-classifier";
 import {
   buildCriticalPriorityReply,
@@ -452,7 +453,7 @@ export async function generateAIReply(args: {
   const allowEmoji = (args.conversationState?.conversationalEtiquette?.repliesSinceLastEmoji ?? 7) >= 7;
 
   const businessIntentProbe = detectBusinessIntent(message);
-  console.log("[BUSINESS_INTENT]", {
+  logStructured("[BUSINESS_INTENT]", {
     request_id: args.replyTurn?.request_id,
     intent: businessIntentProbe.intent,
     isCommercialLead: businessIntentProbe.isCommercialLead,
@@ -562,6 +563,17 @@ export async function generateAIReply(args: {
       socialConversation.blockBusinessEngines ||
       socialHardLock.hardLock ||
       socialTeasing.active;
+
+  logStructured("[PIPELINE_ROUTE]", {
+    request_id: args.replyTurn?.request_id,
+    messagePreview: message.slice(0, 80),
+    forceMainPipeline,
+    disableSocialFallback: conversationRouting.disableSocialFallback,
+    socialHardLock: socialHardLock.hardLock,
+    blockBusinessEngines,
+    intent: conversationIntent.intent,
+    businessIntent: businessIntentProbe.intent,
+  });
 
   dbg?.setMeta({
     socialSignal: conversationIntent.signal,
@@ -1092,15 +1104,17 @@ export async function generateAIReply(args: {
   });
   const businessContextBlock = formatBusinessKnowledgeBaseBlock(businessKnowledgeBase, langForBrain);
   const strictGroundingBlock = formatStrictNoHallucinationBlock(langForBrain);
-  console.log("[BUSINESS_BRAIN]", {
+  logStructured("[BUSINESS_BRAIN]", {
     request_id: args.replyTurn?.request_id,
     servicesSource: businessKnowledgeBase.services_source,
     businessSummary: businessKnowledgeBase.business_summary,
     categories: businessKnowledgeBase.product_categories,
     services: businessKnowledgeBase.services,
     productCount: businessKnowledgeBase.products.length,
+    disableSocialFallback: conversationRouting.disableSocialFallback,
+    blockBusinessEngines,
   });
-  console.log("[AUTO_BUSINESS_SERVICES]", {
+  logStructured("[AUTO_BUSINESS_SERVICES]", {
     request_id: args.replyTurn?.request_id,
     source: businessKnowledgeBase.services_source,
     services: businessKnowledgeBase.services,
@@ -1685,7 +1699,7 @@ export async function generateAIReply(args: {
   console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const deliveryPlan = buildHumanDeliveryPlan({ replyText: cleaned });
   console.log("[TRACE]", "delivery_simulation_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, ...deliveryPlan });
-  console.log("[DELIVERY_SIMULATION]", { request_id: args.replyTurn?.request_id, ...deliveryPlan });
+  logStructured("[DELIVERY_SIMULATION]", { request_id: args.replyTurn?.request_id, ...deliveryPlan });
 
   const emotionalRun = safeEngineExecuteSync({
     engine: "emotional_intelligence",

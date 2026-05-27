@@ -12,7 +12,7 @@ import { lockedLanguageFallback } from "./session-language-lock";
 import { classifyConversationEmotion } from "@/lib/agents/emotional-intelligence/conversation-emotion-classifier";
 
 const COMMERCIAL_STRONG =
-  /\b(prix|stock|dispo|commander|acheter|livraison|modèle|modele|article|lien|payer|fcfa|€|devis|je\s+veux|besoin\s+d['’']?un)\b/i;
+  /\b(prix|stock|dispo|disponible|produit|produits|catalogue|article|articles|service|services|commander|acheter|livraison|modèle|modele|lien|payer|fcfa|€|devis|je\s+veux|besoin\s+d['’']?un|vous\s+avez|quoi\s+comme|quel\s+article)\b/i;
 
 const FRUSTRATION_SOCIAL =
   /\b(tu\s+d[ée]range|vous\s+d[ée]range|d[ée]range|désol[eé]\s+de\s+deranger|sorry\s+to\s+bother|am\s+i\s+bothering)\b/i;

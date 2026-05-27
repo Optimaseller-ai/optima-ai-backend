@@ -191,7 +191,7 @@ export function messageRequiresMainReplyPipeline(message: string): boolean {
   const m = String(message ?? "").trim();
   if (!m) return false;
   if (
-    /\b(tu\s+es\s+s[uû]r|vous\s+êtes\s+s[uû]r|c'?est\s+s[uû]r|c'?est\s+certain|stock|dispo|disponible|arrivé|arrive|en\s+stock|combien|prix|commander|livraison)\b/i.test(
+    /\b(tu\s+es\s+s[uû]r|vous\s+êtes\s+s[uû]r|c'?est\s+s[uû]r|c'?est\s+certain|stock|dispo|disponible|arrivé|arrive|en\s+stock|combien|prix|commander|livraison|produit|produits|catalogue|article|service|services|vous\s+avez|quoi\s+comme)\b/i.test(
       m,
     )
   ) {
