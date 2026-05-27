@@ -1,4 +1,5 @@
 import { defineConfig } from "tsup";
+import path from "path";
 
 export default defineConfig({
   entry: ["src/index.ts"],
@@ -12,5 +13,11 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   outExtension: () => ({ js: ".cjs" }),
+  esbuildOptions(options) {
+    options.alias = {
+      "@": path.resolve("src"),
+      "server-only": path.resolve("src/shims/server-only.ts"),
+    };
+  },
 });
 
