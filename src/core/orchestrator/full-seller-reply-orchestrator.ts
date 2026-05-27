@@ -47,19 +47,29 @@ export type FullSellerReplyOrchestrationResult = {
   orchestrator_pipeline_debug: Record<string, unknown>;
 };
 
+const REPLY_TS = join("src", "lib", "agents", "business-context", "reply.ts");
+
+function hasReplyTs(dir: string): boolean {
+  return existsSync(join(dir, REPLY_TS));
+}
+
 function resolveMonorepoRoot(): string {
   const fromEnv = process.env.OPTIMA_MONOREPO_ROOT?.trim();
   if (fromEnv) {
     const abs = resolve(fromEnv);
-    if (existsSync(join(abs, "src", "lib", "agents", "business-context", "reply.ts"))) return abs;
+    if (hasReplyTs(abs)) return abs;
     throw new Error(`[OPTIMA_RAILWAY_ORCHESTRATOR] OPTIMA_MONOREPO_ROOT invalid: ${abs}`);
   }
+
   const cwd = process.cwd();
-  if (existsSync(join(cwd, "src", "lib", "agents", "business-context", "reply.ts"))) return cwd;
   const parent = resolve(cwd, "..");
-  if (existsSync(join(parent, "src", "lib", "agents", "business-context", "reply.ts"))) return parent;
+
+  // Railway root dir is usually optima-ai-backend — seller brain lives in repo parent.
+  if (hasReplyTs(parent)) return parent;
+  if (hasReplyTs(cwd)) return cwd;
+
   throw new Error(
-    "[OPTIMA_RAILWAY_ORCHESTRATOR] Cannot find src/lib/agents/business-context/reply.ts — deploy full repo or set OPTIMA_MONOREPO_ROOT",
+    "[OPTIMA_RAILWAY_ORCHESTRATOR] Cannot find src/lib/agents/business-context/reply.ts — set Railway Root Directory to repo root OR env OPTIMA_MONOREPO_ROOT=..",
   );
 }
 
