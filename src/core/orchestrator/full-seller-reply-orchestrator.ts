@@ -173,6 +173,7 @@ export async function runFullSellerReplyOrchestration(
       replyTransformationChain: sanitizeReplyTransformationChain(
         Array.isArray(gen.replyTransformationChain) ? (gen.replyTransformationChain as any[]) : [],
       ),
+      conversation_state_next: (gen as any)?.conversationStateNext ?? undefined,
       supervisorInsights: gen.supervisorInsights,
       emotionalSupervisorInsights: gen.emotionalSupervisorInsights,
       personalitySupervisorInsights: gen.personalitySupervisorInsights,

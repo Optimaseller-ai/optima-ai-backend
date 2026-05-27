@@ -82,6 +82,7 @@ import {
   pickMinimalHumanReply,
   updateAiPressureScore,
 } from "@/lib/chat/pipeline/human-silence-engine";
+import { updateProspectBehaviorState } from "@/lib/agents/memory/prospect-behavior-memory";
 import {
   PROMPT_BUDGET,
   compressChatHistory,
@@ -200,6 +201,7 @@ export type GenerateAIReplyResult = {
   replyTransformationChain?: import("@/lib/chat/pipeline/reply-transformation-chain").ReplyTransformLog[];
   socialOnlyMode?: boolean;
   liveOrchestrator?: ConversationLiveState;
+  conversationStateNext?: SellerBehaviorConversationState;
   /** Insights superviseur (stratégie, objections, probabilité conversion). */
   supervisorInsights?: SupervisorInsights;
   /** Insights émotionnels (confiance, abandon, relation). */
@@ -269,6 +271,38 @@ export async function generateAIReply(args: {
   if (summarizedCount > 0) {
     logCtx("history_compressed", { userId, summarizedCount, kept: history.length });
   }
+
+  // Persistent human behavioral memory (stored in conversation_state; caller persists it).
+  const behaviorUpdate = updateProspectBehaviorState({
+    previous: args.conversationState,
+    userMessage: message,
+    history,
+  });
+  args.conversationState = {
+    ...(args.conversationState ?? {}),
+    prospect_behavior: behaviorUpdate.prospect_behavior,
+    emotional_flow: behaviorUpdate.emotional_flow,
+    ai_pressure_score: behaviorUpdate.ai_pressure_score,
+  } as any;
+  console.log("[PROSPECT_BEHAVIOR]", {
+    request_id: args.replyTurn?.request_id,
+    addressing: behaviorUpdate.prospect_behavior.addressing,
+    politenessLevel01: behaviorUpdate.prospect_behavior.politenessLevel01,
+    humor01: behaviorUpdate.prospect_behavior.humor01,
+    coldness01: behaviorUpdate.prospect_behavior.coldness01,
+    aggressivity01: behaviorUpdate.prospect_behavior.aggressivity01,
+    avgUserMsgLen: behaviorUpdate.prospect_behavior.avgUserMsgLen,
+    emojiFreq01: behaviorUpdate.prospect_behavior.emojiFreq01,
+  });
+  console.log("[EMOTIONAL_FLOW]", {
+    request_id: args.replyTurn?.request_id,
+    saturation01: behaviorUpdate.emotional_flow.saturation01,
+    fatigue01: behaviorUpdate.emotional_flow.fatigue01,
+    frustration01: behaviorUpdate.emotional_flow.frustration01,
+    curiosity01: behaviorUpdate.emotional_flow.curiosity01,
+    impatience01: behaviorUpdate.emotional_flow.impatience01,
+    highTrustMode: behaviorUpdate.emotional_flow.highTrustMode,
+  });
 
   let profileBusinessName: string;
   let sector: string;
@@ -1049,6 +1083,24 @@ export async function generateAIReply(args: {
     sales: salesStage,
     personality: personalityStage,
   });
+  // Light human mimetism based on prospect_behavior + emotional_flow.
+  const pb = (args.conversationState as any)?.prospect_behavior;
+  const ef = (args.conversationState as any)?.emotional_flow;
+  if (pb?.addressing === "tu") {
+    humanPlan.preGenerationDirectives.push("Tutoiement léger (sans être familier lourd).");
+  } else {
+    humanPlan.preGenerationDirectives.push("Vouvoiement (professionnel mais WhatsApp).");
+  }
+  if (ef?.saturation01 >= 0.55 || (args.conversationState as any)?.ai_pressure_score >= 0.55) {
+    humanPlan.preGenerationDirectives.push("Le prospect semble saturé: réponds court, pas de relance, pas de question.");
+    (humanPlan as any).questionBudget = { ...humanPlan.questionBudget, askQuestion: false, maxQuestions: 0, reason: "saturation_no_followup" };
+  }
+  if (pb?.coldness01 >= 0.6) {
+    humanPlan.preGenerationDirectives.push("Prospect froid: réponse très courte, neutre, pas d'argumentaire.");
+  }
+  if (pb?.humor01 >= 0.5) {
+    humanPlan.preGenerationDirectives.push("Prospect humour: tu peux répondre léger (0-1 emoji max).");
+  }
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[QUESTION_PROBABILITY]", {
@@ -1483,6 +1535,7 @@ export async function generateAIReply(args: {
     replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
     socialOnlyMode: socialOnly,
     liveOrchestrator: orchestrator.liveState,
+    conversationStateNext: args.conversationState,
     supervisorInsights: salesDecision.insights,
     emotionalSupervisorInsights: emotionalIntel.supervisor,
     personalitySupervisorInsights: personalityConsistency.supervisor,
