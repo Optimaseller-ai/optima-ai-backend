@@ -1,6 +1,10 @@
 import type { CatalogProductBrief } from "./catalog-types";
 import type { BusinessFaqEntry, BusinessOperationalFacts, BusinessProfileSnapshot } from "@/lib/business-knowledge/types";
 import type { ProfileIdentityForKnowledge } from "@/lib/business-knowledge/types";
+import {
+  inferAutoBusinessServices,
+  type AutoBusinessServicesSource,
+} from "../catalog/auto-business-services";
 
 /**
  * Structure canonique injectée dans chaque requête LLM — source de vérité business.
@@ -8,7 +12,10 @@ import type { ProfileIdentityForKnowledge } from "@/lib/business-knowledge/types
 export type BusinessKnowledgeBase = {
   business_name: string;
   business_description: string;
+  /** Phrase naturelle auto (catalogue) pour service inquiry + grounding */
+  business_summary: string;
   services: string[];
+  services_source: AutoBusinessServicesSource;
   product_categories: string[];
   products: Array<{ name: string; category?: string | null; priceFcfa?: number | null }>;
   opening_hours: string;
@@ -17,7 +24,6 @@ export type BusinessKnowledgeBase = {
   faq: Array<{ question: string; answer: string }>;
   forbidden_claims: string[];
   communication_style: string;
-  /** Vocabulaire autorisé (noms produits, catégories, secteur) — anti-hallucination */
   allowed_vocabulary: string[];
 };
 
@@ -55,31 +61,27 @@ export function buildBusinessKnowledgeBase(input: {
   facts?: BusinessOperationalFacts;
   products: CatalogProductBrief[];
   faqEntries?: BusinessFaqEntry[];
+  lang?: "fr" | "en" | "es";
 }): BusinessKnowledgeBase {
   const { profile, identity, facts, products, faqEntries } = input;
-  const categories = uniqStrings(products.map((p) => p.category).filter(Boolean) as string[]);
-  const productNames = products.map((p) => p.name).filter(Boolean).slice(0, 40);
-
+  const lang = input.lang ?? "fr";
   const offer = identity?.offer?.trim() ?? "";
   const sector = profile.sector?.trim() ?? identity?.sector?.trim() ?? "";
-  const goal = identity?.goal?.trim() ?? "";
 
-  const services: string[] = [];
-  if (offer) services.push(offer);
-  if (sector && !services.some((s) => s.toLowerCase().includes(sector.toLowerCase()))) {
-    services.push(`Activité : ${sector}`);
-  }
-  if (categories.length) {
-    services.push(`Catégories catalogue : ${categories.join(", ")}`);
-  }
-  if (facts?.commercialInstructions?.trim()) {
-    services.push(facts.commercialInstructions.trim());
-  }
+  const auto = inferAutoBusinessServices({
+    products,
+    manualOffer: offer,
+    sector,
+    lang,
+  });
+
+  const productNames = products.map((p) => p.name).filter(Boolean).slice(0, 40);
+
+  const services = uniqStrings(auto.business_services);
 
   const business_description = [
-    offer,
-    sector ? `Secteur : ${sector}` : "",
-    goal ? `Objectif : ${goal}` : "",
+    auto.business_summary,
+    sector && auto.source !== "offer" ? `Secteur : ${sector}` : "",
     facts?.companyImportantNotes?.trim() ?? "",
   ]
     .filter(Boolean)
@@ -90,7 +92,8 @@ export function buildBusinessKnowledgeBase(input: {
     profile.businessName,
     sector,
     offer,
-    ...categories,
+    ...auto.business_categories,
+    ...auto.business_services,
     ...productNames,
     ...(facts?.servedCities ?? []),
   ]);
@@ -102,9 +105,11 @@ export function buildBusinessKnowledgeBase(input: {
 
   return {
     business_name: profile.businessName,
-    business_description: business_description || sector || profile.businessName,
-    services: uniqStrings(services),
-    product_categories: categories,
+    business_description: business_description || auto.business_summary || profile.businessName,
+    business_summary: auto.business_summary,
+    services,
+    services_source: auto.source,
+    product_categories: auto.business_categories,
     products: products.slice(0, 24).map((p) => ({
       name: p.name,
       category: p.category,
@@ -121,15 +126,18 @@ export function buildBusinessKnowledgeBase(input: {
 }
 
 export function buildServiceGroundedFallback(kb: BusinessKnowledgeBase, lang: "fr" | "en" | "es"): string {
+  if (kb.business_summary && kb.services_source !== "none") {
+    return kb.business_summary.replace(/\.$/, "") + (lang === "en" ? "." : ".");
+  }
   const cats = kb.product_categories.slice(0, 4).join(", ");
   if (lang === "en") {
     if (kb.services[0]) return `We mainly do ${kb.services[0].toLowerCase()}.`;
     if (cats) return `We're mainly on ${cats}.`;
-    return "Let me double-check what we offer and get back to you.";
+    return "I'll check what's available right now.";
   }
   if (kb.services[0]) return `On est surtout sur ${kb.services[0].toLowerCase()}.`;
   if (cats) return `On fait surtout ${cats}.`;
-  return "Je vérifie ça pour vous et je vous confirme.";
+  return "Je vérifie les services disponibles actuellement.";
 }
 
 export function formatBusinessKnowledgeBaseBlock(kb: BusinessKnowledgeBase, lang: "fr" | "en" | "es"): string {
@@ -144,8 +152,8 @@ export function formatBusinessKnowledgeBaseBlock(kb: BusinessKnowledgeBase, lang
     kb.services.length > 0
       ? kb.services.map((s) => `- ${s}`).join("\n")
       : lang === "en"
-        ? "- (describe only from catalogue/categories below)"
-        : "- (décrire uniquement via catalogue/catégories ci-dessous)";
+        ? "- (no services inferred — say you verify)"
+        : "- (aucun service déduit — dire qu'on vérifie)";
 
   const categoriesLine = kb.product_categories.length
     ? kb.product_categories.join(", ")
@@ -175,18 +183,25 @@ export function formatBusinessKnowledgeBaseBlock(kb: BusinessKnowledgeBase, lang
     lang === "en"
       ? [
           "STRICT RULE: If info is missing, say you verify. Never guess mobile plans, internet, or products not listed.",
-          "When asked « what are your services », answer ONLY from services/categories/products above.",
+          "When asked « what are your services », use business_summary and services list ONLY.",
         ]
       : [
           "RÈGLE STRICTE : si info absente → « je vérifie ». Jamais deviner forfaits, internet, ou produits non listés.",
-          "Si on demande « c'est quoi vos services », répondre UNIQUEMENT avec services/catégories/produits ci-dessus.",
+          "Si on demande « c'est quoi vos services », utiliser UNIQUEMENT business_summary et la liste services.",
         ];
+
+  const sourceNote =
+    lang === "en"
+      ? `services_source: ${kb.services_source} (catalog > categories > manual offer)`
+      : `services_source: ${kb.services_source} (catalogue > catégories > offer manuel)`;
 
   return [
     header,
+    sourceNote,
     `business_name: ${kb.business_name}`,
+    `business_summary: ${kb.business_summary}`,
     `business_description: ${kb.business_description}`,
-    "services:",
+    "services (auto from catalogue):",
     servicesLine,
     `product_categories: ${categoriesLine}`,
     "products (real catalogue):",
@@ -204,4 +219,21 @@ export function formatBusinessKnowledgeBaseBlock(kb: BusinessKnowledgeBase, lang
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Fusionne des listes produits par nom (pour élargir le pool catalogue brain). */
+export function mergeCatalogProducts(
+  ...lists: CatalogProductBrief[][]
+): CatalogProductBrief[] {
+  const seen = new Set<string>();
+  const out: CatalogProductBrief[] = [];
+  for (const list of lists) {
+    for (const p of list) {
+      const key = String(p.name ?? "").toLowerCase().trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+    }
+  }
+  return out;
 }

@@ -16,7 +16,9 @@ export {
   buildBusinessKnowledgeBase,
   buildServiceGroundedFallback,
   formatBusinessKnowledgeBaseBlock,
+  mergeCatalogProducts,
   type BusinessKnowledgeBase,
 } from "./context/business-knowledge-base";
+export { inferAutoBusinessServices, type AutoBusinessServicesResult } from "./catalog/auto-business-services";
 export { detectBusinessIntent, type BusinessIntentKind } from "./intent/business-intent-detector";
 export { validateReplyAgainstBusinessContext, formatStrictNoHallucinationBlock } from "./grounding/strict-grounding";

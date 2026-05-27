@@ -14,6 +14,7 @@ import {
   buildBusinessKnowledgeBase,
   buildServiceGroundedFallback,
   formatBusinessKnowledgeBaseBlock,
+  mergeCatalogProducts,
 } from "@/lib/business-brain/context/business-knowledge-base";
 import { detectBusinessIntent } from "@/lib/business-brain/intent/business-intent-detector";
 import { formatStrictNoHallucinationBlock } from "@/lib/business-brain/grounding/strict-grounding";
@@ -1052,28 +1053,59 @@ export async function generateAIReply(args: {
       : [];
 
   const knowledgeProfileBundle = await loadBusinessKnowledgeProfile(admin, userId);
-  const catalogPoolForKb = catalogBrief.length ? catalogBrief : knowledgeSearch.products;
+
+  // Elargir le pool catalogue pour auto-services (régénéré à chaque requête = toujours à jour admin).
+  let catalogPoolForKb = mergeCatalogProducts(catalogBrief, knowledgeSearch.products);
+  const needsBroadCatalog =
+    catalogPoolForKb.length < 8 ||
+    businessIntentProbe.intent === "service_inquiry" ||
+    businessIntentProbe.blockSocialOnly;
+  if (needsBroadCatalog && admin) {
+    const broadCatalog = await searchBusinessKnowledge({
+      userId,
+      prospectMessage: sellerProfile.sector || "catalogue produits",
+      maxProducts: 32,
+      includeVectorChunks: false,
+    });
+    catalogPoolForKb = mergeCatalogProducts(catalogPoolForKb, broadCatalog.products);
+    logCtx("catalog_broad_for_brain", { userId, productCount: catalogPoolForKb.length });
+  }
+
+  const manualOfferLine = knowledgeProfileBundle.facts.companyImportantNotes
+    ?.split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length >= 8);
+
   const businessKnowledgeBase = buildBusinessKnowledgeBase({
     profile: knowledgeSearch.profile,
-    identity: profileRowToIdentity({
-      business_name: sellerProfile.businessName,
-      business_type: sellerProfile.sector,
+    identity: {
+      businessName: sellerProfile.businessName,
+      sector: sellerProfile.sector,
       country: sellerProfile.country,
       city: sellerProfile.city,
-      offer: knowledgeProfileBundle.facts.companyImportantNotes?.split("\n")[0]?.trim(),
-      goal: undefined,
-    } as any),
+      offer: manualOfferLine,
+    },
     facts: { ...knowledgeSearch.facts, ...knowledgeProfileBundle.facts },
     products: catalogPoolForKb,
     faqEntries: knowledgeSearch.faqEntries,
+    lang: langForBrain,
   });
   const businessContextBlock = formatBusinessKnowledgeBaseBlock(businessKnowledgeBase, langForBrain);
   const strictGroundingBlock = formatStrictNoHallucinationBlock(langForBrain);
   console.log("[BUSINESS_BRAIN]", {
     request_id: args.replyTurn?.request_id,
+    servicesSource: businessKnowledgeBase.services_source,
+    businessSummary: businessKnowledgeBase.business_summary,
     categories: businessKnowledgeBase.product_categories,
+    services: businessKnowledgeBase.services,
     productCount: businessKnowledgeBase.products.length,
-    servicesCount: businessKnowledgeBase.services.length,
+  });
+  console.log("[AUTO_BUSINESS_SERVICES]", {
+    request_id: args.replyTurn?.request_id,
+    source: businessKnowledgeBase.services_source,
+    services: businessKnowledgeBase.services,
+    categories: businessKnowledgeBase.product_categories,
+    summary: businessKnowledgeBase.business_summary,
   });
 
   const businessKnowledge = retrieveBusinessContextFromSnapshot({
