@@ -37,6 +37,10 @@ export async function openRouterChat(args: {
   timeoutMs?: number;
   signal?: AbortSignal;
   maxTokens?: number;
+  temperature?: number;
+  topP?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
 }): Promise<string> {
   const env = loadEnv();
   if (!env.OPENROUTER_API_KEY?.trim()) {
@@ -46,6 +50,10 @@ export async function openRouterChat(args: {
   const model = args.model ?? env.OPENROUTER_MODEL;
   const timeoutMs = args.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const maxTokens = args.maxTokens ?? 1200;
+  const temperature = args.temperature ?? 0.85;
+  const topP = args.topP ?? 0.9;
+  const presencePenalty = args.presencePenalty ?? 0.4;
+  const frequencyPenalty = args.frequencyPenalty ?? 0.3;
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -69,7 +77,10 @@ export async function openRouterChat(args: {
       body: JSON.stringify({
         model,
         messages: args.messages,
-        temperature: 0.4,
+        temperature,
+        top_p: topP,
+        presence_penalty: presencePenalty,
+        frequency_penalty: frequencyPenalty,
         max_tokens: maxTokens,
       }),
       signal,

@@ -118,6 +118,10 @@ export async function openRouterChat(args: {
   timeoutMs?: number;
   signal?: AbortSignal;
   maxTokens?: number;
+  temperature?: number;
+  topP?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
   /** Logs enrichis budget (optionnel). */
   promptBudget?: {
     finalPromptTokens: number;
@@ -153,6 +157,10 @@ export async function openRouterChat(args: {
   const { promptChars, estimatedPromptTokens } = promptStats(args.messages);
 
   const maxTokens = args.maxTokens ?? 1200;
+  const temperature = args.temperature ?? 0.85;
+  const topP = args.topP ?? 0.9;
+  const presencePenalty = args.presencePenalty ?? 0.4;
+  const frequencyPenalty = args.frequencyPenalty ?? 0.3;
 
   logOpenRouterChatAttempt({
     phase: "request",
@@ -195,7 +203,10 @@ export async function openRouterChat(args: {
       body: JSON.stringify({
         model,
         messages: args.messages,
-        temperature: 0.4,
+        temperature,
+        top_p: topP,
+        presence_penalty: presencePenalty,
+        frequency_penalty: frequencyPenalty,
         max_tokens: maxTokens,
       }),
       signal: combined,

@@ -25,8 +25,6 @@ import {
 } from "@/lib/chat/pipeline/conversation-priority-engine";
 import { lockedLanguageFallback, resolveSessionLanguageLock } from "@/lib/chat/pipeline/session-language-lock";
 import {
-  buildPremiumSystemPrompt,
-  buildPremiumUserPrompt,
   postProcessPremiumReply,
   quickHumanReply,
   detectDominantLanguage,
@@ -76,6 +74,13 @@ import {
   prepareOpenRouterPayload,
   truncateContextBlocks,
 } from "@/lib/ai/prompt-budget";
+import { chooseOpenRouterModel } from "@/lib/ai/openrouter/modelPolicy";
+import { inferDynamicEnergy } from "@/lib/ai/dynamicEnergyEngine";
+import { buildHumanBehaviorPlan } from "@/lib/ai/humanBehaviorEngine";
+import { compressMemoryFacts } from "@/lib/ai/memory/memoryCompressor";
+import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
+import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
+import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import {
   getContextualFallback,
   safeGetContextualFallback,
@@ -129,13 +134,21 @@ function pickContextualFallback(input: ContextualFallbackInput): string {
 }
 
 async function openRouterChatWithOneRetry(
-  payload: ReturnType<typeof prepareOpenRouterPayload>,
+  payload: ReturnType<typeof prepareOpenRouterPayload> & {
+    model?: string;
+    maxTokensOverride?: number;
+  },
 ) {
   const call = () =>
     openRouterChat({
+      model: payload.model,
       messages: payload.messages,
       timeoutMs: 25_000,
-      maxTokens: payload.maxTokens,
+      maxTokens: payload.maxTokensOverride ?? payload.maxTokens,
+      temperature: 0.85,
+      topP: 0.9,
+      presencePenalty: 0.4,
+      frequencyPenalty: 0.3,
       promptBudget: {
         finalPromptTokens: payload.finalPromptTokens,
         finalMaxTokens: payload.finalMaxTokens,
@@ -902,6 +915,62 @@ export async function generateAIReply(args: {
     learningBlock: learningBlock ?? undefined,
   });
 
+  // -------------------- NEW PIPELINE STAGES (pre-LLM) --------------------
+  const emotionStage = {
+    language: langForBrain,
+    emotionLabel: String((emotionProfile as any)?.dominant_emotion ?? (emotionProfile as any)?.label ?? "neutral"),
+    blocksSocialQuick: (emotionProfile as any)?.blocks_social_quick === true,
+    requiresEmpathy: (emotionProfile as any)?.requires_empathy === true,
+  };
+
+  const salesStage = {
+    style: "balanced" as const,
+    objective:
+      prospectTurnIntent === "purchase_ready"
+        ? ("close" as const)
+        : emotionStage.requiresEmpathy
+          ? ("defuse" as const)
+          : ("answer" as const),
+    urgency: prospectTurnIntent === "purchase_ready" ? ("high" as const) : ("medium" as const),
+    objectionHandling: prospectTurnIntent === "objection" || prospectTurnIntent === "price",
+  };
+
+  const energyPick = inferDynamicEnergy({
+    lang: langForBrain,
+    message,
+    turnCount,
+    localHour: new Date().getHours(),
+    emotionLabel: emotionStage.emotionLabel,
+    purchaseIntent: prospectTurnIntent === "purchase_ready",
+  });
+
+  const personalityStage = {
+    energy: energyPick.energy,
+    voice: "human_whatsapp_fr" as const,
+    constraints: [
+      "Ne pas sonner comme une IA.",
+      "Réponse WhatsApp: courte, naturelle, pas FAQ.",
+      energyPick.energy === "busy" ? "Occasionnellement: \"attends je regarde\"." : "",
+    ].filter(Boolean),
+  };
+
+  const microSeed = `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|${turnCount}`;
+  const humanPlan = buildHumanBehaviorPlan({
+    lang: langForBrain,
+    message,
+    turnCount,
+    microSeed,
+    emotion: emotionStage,
+    sales: salesStage,
+    personality: personalityStage,
+  });
+
+  console.log("[QUESTION_PROBABILITY]", {
+    request_id: args.replyTurn?.request_id,
+    turnKind: humanPlan.turnKind,
+    ...humanPlan.questionBudget,
+  });
+
   const promptCtx = {
     message,
     history,
@@ -919,11 +988,50 @@ export async function generateAIReply(args: {
     useCompactSystemPrompt: true,
   };
 
-  const systemPrompt = buildPremiumSystemPrompt(sellerProfile, promptCtx);
-  const userPrompt = buildPremiumUserPrompt(sellerProfile, promptCtx);
+  const historyText = (promptCtx.history ?? [])
+    .slice(-6)
+    .map((m: any) => `${m.role === "user" ? "Prospect" : sellerProfile.agentName}: ${String(m.content ?? "").slice(0, 220)}`)
+    .join("\n");
 
+  const learningFactsRaw = blocksTruncated.learningBlock
+    ? blocksTruncated.learningBlock
+        .split("\n")
+        .map((l) => l.replace(/^[\-\*\s]+/, "").trim())
+        .filter(Boolean)
+    : [];
+  const memFacts = compressMemoryFacts({ facts: learningFactsRaw, limit: 3 });
+  console.log("[MEMORY_COMPRESSION]", {
+    request_id: args.replyTurn?.request_id,
+    factsBefore: learningFactsRaw.length,
+    factsAfter: memFacts.facts.length,
+    dropped: memFacts.dropped,
+  });
+
+  const promptBundle = buildDynamicPromptBundle({
+    agentName: sellerProfile.agentName,
+    businessName: sellerProfile.businessName,
+    message,
+    historyText,
+    productsText: promptCtx.productsText,
+    chunksText: promptCtx.chunksText,
+    learningFacts: memFacts.facts,
+    emotion: emotionStage,
+    sales: salesStage,
+    personality: personalityStage,
+    human: humanPlan,
+    attempt: 1,
+  });
+
+  const systemPrompt = promptBundle.systemPrompt;
+  const userPrompt = promptBundle.userPrompt;
+
+  const modelChoice = chooseOpenRouterModel({ preferHumanQuality: true, latencyBudgetMs: 25_000 });
   const openRouterPayload = prepareOpenRouterPayload(systemPrompt, userPrompt, {
     userMessageLen: message.length,
+  });
+  const openRouterPayloadWithModel = Object.assign(openRouterPayload, {
+    model: modelChoice.model,
+    maxTokensOverride: 180,
   });
 
   logCtx("prompt_ready", {
@@ -933,6 +1041,10 @@ export async function generateAIReply(args: {
     finalMaxTokens: openRouterPayload.finalMaxTokens,
     remainingBudget: openRouterPayload.remainingBudget,
     compressed: openRouterPayload.compressed,
+    promptModules: promptBundle.includedModules,
+    promptTotalChars: promptBundle.totalChars,
+    model: modelChoice.model,
+    modelReason: modelChoice.reason,
     historyTurns: history.length,
     productsBlockChars: productsTextMinimal.length,
     chunksBlockChars: chunksTextMinimal.length,
@@ -968,7 +1080,38 @@ export async function generateAIReply(args: {
       }),
     run: async () => {
       const orStart = Date.now();
-      const raw = await openRouterChatWithOneRetry(openRouterPayload);
+      let attempt = 1;
+      let raw = await openRouterChatWithOneRetry(openRouterPayloadWithModel);
+
+      let decision = validateHumanReplyLength(raw);
+      console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
+      if (!decision.ok) {
+        attempt = 2;
+        const rebundle = buildDynamicPromptBundle({
+          agentName: sellerProfile.agentName,
+          businessName: sellerProfile.businessName,
+          message,
+          historyText,
+          productsText: promptCtx.productsText,
+          chunksText: promptCtx.chunksText,
+          learningFacts: memFacts.facts,
+          emotion: emotionStage,
+          sales: salesStage,
+          personality: personalityStage,
+          human: humanPlan,
+          attempt,
+        });
+        const retryPayload = prepareOpenRouterPayload(rebundle.systemPrompt, rebundle.userPrompt, {
+          userMessageLen: message.length,
+        });
+        const retryWithModel = Object.assign(retryPayload, {
+          model: modelChoice.model,
+          maxTokensOverride: 180,
+        });
+        raw = await openRouterChatWithOneRetry(retryWithModel);
+        decision = validateHumanReplyLength(raw);
+        console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
+      }
       logCtx("openrouter_total_ok", {
         userId,
         ms: Date.now() - orStart,
@@ -998,6 +1141,9 @@ export async function generateAIReply(args: {
   }
 
   cleaned = stripFakeVerificationPhrases(cleaned, langForBrain, false);
+
+  const deliveryPlan = buildHumanDeliveryPlan({ replyText: cleaned });
+  console.log("[DELIVERY_SIMULATION]", { request_id: args.replyTurn?.request_id, ...deliveryPlan });
 
   const emotionalRun = safeEngineExecuteSync({
     engine: "emotional_intelligence",
