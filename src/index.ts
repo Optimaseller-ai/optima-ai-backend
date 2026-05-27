@@ -3,11 +3,19 @@ import cors from "@fastify/cors";
 import { loadEnv } from "./config/env.js";
 import { healthRoutes } from "./routes/health.js";
 import { chatRoutes } from "./routes/chat.js";
+import { getAdminClientReadiness } from "@/lib/supabase/admin";
 
 async function main() {
   const env = loadEnv();
   console.log("[OPTIMA_BACKEND] autonomous_mode=true");
   console.log("[OPTIMA_BACKEND] monorepo_dependency=false");
+
+  const readiness = getAdminClientReadiness();
+  if (readiness.ready) {
+    console.log("[OPTIMA_BACKEND] supabase_admin_ready=true");
+  } else {
+    console.log("[OPTIMA_BACKEND] supabase_admin_ready=false", { reason: readiness.reason });
+  }
 
   const app = Fastify({
     logger: {

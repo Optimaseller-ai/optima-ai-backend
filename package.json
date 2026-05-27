@@ -23,6 +23,7 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "undici": "^7.26.0",
+    "ws": "^8.18.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
