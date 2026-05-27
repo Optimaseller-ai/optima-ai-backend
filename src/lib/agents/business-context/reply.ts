@@ -97,6 +97,7 @@ import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder"
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
+import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
   getContextualFallback,
   safeGetContextualFallback,
@@ -1335,6 +1336,26 @@ export async function generateAIReply(args: {
   if (imperf.applied.length) {
     cleaned = imperf.text;
     console.log("[HUMAN_IMPERFECTION]", { request_id: args.replyTurn?.request_id, applied: imperf.applied });
+  }
+
+  // Enforce premium emoji policy (default: none; allow only rarely in social/humor context).
+  const pbEmoji = (args.conversationState as any)?.prospect_behavior;
+  const emojiPolicy = enforcePremiumEmojiPolicy({
+    reply: cleaned,
+    userMessage: message,
+    prospectEmojiFreq01: pbEmoji?.emojiFreq01,
+    humor01: pbEmoji?.humor01,
+    socialMode: socialTeasing.active,
+    repliesSinceLastEmoji: args.conversationState?.conversationalEtiquette?.repliesSinceLastEmoji,
+  });
+  if (emojiPolicy.beforeEmoji !== emojiPolicy.afterEmoji) {
+    console.log("[EMOJI_POLICY]", {
+      request_id: args.replyTurn?.request_id,
+      reason: emojiPolicy.reason,
+      beforeEmoji: emojiPolicy.beforeEmoji,
+      afterEmoji: emojiPolicy.afterEmoji,
+    });
+    cleaned = emojiPolicy.text;
   }
 
   if (socialTeasing.active) {

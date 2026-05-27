@@ -32,12 +32,13 @@ export function pickMinimalHumanReply(args: {
   seed?: string;
 }): { reply: string; noFollowUp: true; reason: string } {
   const n = norm(args.userMessage);
-  const allowEmoji = args.allowEmoji;
+  // Premium policy: minimal replies should not add emojis by default.
+  const allowEmoji = false;
 
   const pool = (() => {
-    if (/😂|🤣/.test(args.userMessage)) return ["😂", "mdr 😄", "😄"] as const;
-    if (n === "ok" || n === "okay") return ["ça marche", "ok", allowEmoji ? "ok 😄" : "ok"] as const;
-    if (n === "oui") return [allowEmoji ? "oui 😄" : "oui", "ok", "exact"] as const;
+    if (/😂|🤣/.test(args.userMessage)) return ["😂", "mdr", "😄"] as const;
+    if (n === "ok" || n === "okay") return ["ça marche", "ok"] as const;
+    if (n === "oui") return ["oui", "ok", "exact"] as const;
     if (n === "non") return ["non", "ok"] as const;
     if (n.includes("ah d'accord") || n === "d'accord" || n === "dac") return ["d'accord", "ok", "ça marche"] as const;
     if (n.includes("je vois")) return ["je vois", "ok", "ça marche"] as const;
