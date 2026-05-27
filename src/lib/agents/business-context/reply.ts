@@ -78,6 +78,11 @@ import {
   sanitizeReplyTransformationChain,
 } from "@/lib/chat/pipeline/contamination-filter";
 import {
+  detectWeakUserMessage,
+  pickMinimalHumanReply,
+  updateAiPressureScore,
+} from "@/lib/chat/pipeline/human-silence-engine";
+import {
   PROMPT_BUDGET,
   compressChatHistory,
   prepareOpenRouterPayload,
@@ -373,6 +378,13 @@ export async function generateAIReply(args: {
     turnCount,
     frustrationLevel01: args.conversationState?.prospectEmotionalState?.frustrationLevel,
   });
+  const weakSignal = detectWeakUserMessage(message);
+  console.log("[HUMAN_SILENCE]", {
+    request_id: args.replyTurn?.request_id,
+    weak: weakSignal.weak,
+    kind: weakSignal.kind,
+    reason: weakSignal.reason,
+  });
   if (replyManager && forceMainPipeline) {
     replyManager.markMainPipelineStarted();
   }
@@ -527,6 +539,22 @@ export async function generateAIReply(args: {
           allowEmoji,
         })
       : null;
+
+  // Priority: minimal replies + no follow-up for weak engagement messages.
+  if (!forceMainPipeline && weakSignal.weak && args.followupAfterHold !== true) {
+    const minimal = pickMinimalHumanReply({
+      userMessage: message,
+      allowEmoji,
+      seed: `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|weak`,
+    });
+    console.log("[NO_FOLLOWUP]", { request_id: args.replyTurn?.request_id, reason: "weak_user_message" });
+    dbg?.setMeta({ selectedStrategy: "HUMAN_SILENCE" });
+    return {
+      reply: minimal.reply,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
+      socialOnlyMode: false,
+    };
+  }
 
   if (microShortReply && args.followupAfterHold !== true) {
     const polishedMicro = safeEngineExecuteSync({
@@ -1225,6 +1253,19 @@ export async function generateAIReply(args: {
   }
 
   cleaned = stripFakeVerificationPhrases(cleaned, langForBrain, false);
+
+  // Update ai_pressure_score in runtime state (for prompt shaping + observability).
+  const qCount = (cleaned.match(/\?/g) ?? []).length;
+  const emojiCount = (cleaned.match(/[\p{Extended_Pictographic}]/gu) ?? []).length;
+  const prevPressure = Number((args.conversationState as any)?.ai_pressure_score ?? 0);
+  const nextPressure = updateAiPressureScore({
+    previous: prevPressure,
+    replyText: cleaned,
+    questionCount: qCount,
+    emojiCount,
+  });
+  (args.conversationState as any) = { ...(args.conversationState as any), ai_pressure_score: nextPressure };
+  console.log("[AI_PRESSURE_SCORE]", { request_id: args.replyTurn?.request_id, ai_pressure_score: nextPressure });
 
   if (socialTeasing.active) {
     // Post-generation blacklist filter (works even if LLM ignores prompt).
