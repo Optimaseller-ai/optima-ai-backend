@@ -109,12 +109,8 @@ export function routeSocialPriority(input: SocialHumanizationInput): SocialRoute
   }
 
   if (instantReply && HOLD_ONLY.test(instantReply)) {
-    instantReply =
-      lang === "en"
-        ? "I'm listening 🙂"
-        : lang === "es"
-          ? "Le escucho 🙂"
-          : "Je vous écoute 🙂";
+    // Never inject generic “I'm listening / take your time” templates.
+    instantReply = null;
   }
 
   const reasoning = isSocialPriority

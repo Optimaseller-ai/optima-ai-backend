@@ -57,6 +57,7 @@ import { microSilenceSuppressBareAckQuickReply } from "@/lib/chat/micro-silence-
 import { formatSubconsciousFlowPromptBlock, formatConversationalContinuityBlock } from "@/lib/agents/human-behavior/subconscious-flow-engine";
 import { formatComfortEnginePromptBlock } from "@/lib/agents/human-behavior/comfort-engine";
 import { businessRhythmBandFromLuxonParts, formatBusinessRhythmPromptBlock } from "@/lib/agents/human-behavior/business-rhythm";
+import { isHumanEnough } from "@/lib/ai/validators/humanEnough";
 import {
   formatConversationTemperaturePromptBlock,
   inferConversationTemperatureLevel,
@@ -1972,6 +1973,17 @@ export type PostProcessPremiumReplyOpts = {
 export function postProcessPremiumReply(reply: string, opts?: PostProcessPremiumReplyOpts) {
   const initial = String(reply ?? "").trim();
   if (!initial) return "";
+
+  // Human reply protection: if already “human enough”, do not rewrite it.
+  // This prevents sanitize_hold / social pipelines from overwriting good LLM output.
+  const verdict = isHumanEnough(initial);
+  if (verdict.ok) {
+    console.log("[HUMAN_REPLY_PROTECTED]", { reason: "isHumanEnough" });
+    console.log("[POST_PROCESS_SKIPPED]", { reason: "human_reply_protected" });
+    return initial;
+  } else if (verdict.hits?.length) {
+    console.log("[BLACKLIST_TRIGGER]", { context: "post_process_input", removed: verdict.hits });
+  }
 
   const extra = Array.isArray(opts?.conversationState?.preferences?.blacklist)
     ? opts!.conversationState!.preferences!.blacklist!.map(String)

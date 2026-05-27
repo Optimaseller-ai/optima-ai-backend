@@ -75,19 +75,19 @@ export function lockedLanguageFallback(args: {
   }
   if (args.kind === "greeting") {
     if (lang === "en") {
-      return `Hello 🙂 Welcome to ${businessName}. How can I help you today?`;
+      return `Hello 🙂`;
     }
     if (lang === "es") {
-      return `Hola 🙂 Bienvenido a ${businessName}. ¿En qué puedo ayudarle hoy?`;
+      return `Hola 🙂`;
     }
-    return `Bonjour 🙂 Bienvenue chez ${businessName}. Comment puis-je vous aider aujourd'hui ?`;
+    return `Bonjour 🙂`;
   }
   if (args.kind === "hold") {
     if (lang === "en") return "One moment — I'm checking that for you.";
     if (lang === "es") return "Un momento — estoy verificando.";
     return "Un instant — je vérifie cela pour vous.";
   }
-  if (lang === "en") return `I'm ${agentName} from ${businessName}. What can I help you with?`;
-  if (lang === "es") return `Soy ${agentName} de ${businessName}. ¿En qué puedo ayudarle?`;
-  return `Je suis ${agentName} chez ${businessName}. Comment puis-je vous aider ?`;
+  if (lang === "en") return `Hi 🙂`;
+  if (lang === "es") return `Hola 🙂`;
+  return `Salut 🙂`;
 }

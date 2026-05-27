@@ -100,8 +100,8 @@ export function buildHumanSocialGreetingReply(input: GreetingReplyInput): string
   return pick(
     [
       `${salute}${honorSuffix}${emoji}\nContent de vous lire.`,
-      `${salute}${honorSuffix} — je suis disponible si vous avez une question.`,
-      `${salute}${honorSuffix}${emoji}\nJe vous écoute, prenez votre temps.`,
+      `${salute}${honorSuffix}${emoji}`,
+      `${salute}${honorSuffix}${emoji}\nOui 🙂`,
     ],
     seed,
   );

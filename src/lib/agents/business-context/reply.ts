@@ -448,13 +448,12 @@ export async function generateAIReply(args: {
 
   const transformLogs: import("@/lib/chat/pipeline/reply-transformation-chain").ReplyTransformLog[] = [];
 
+  // Social-only mode must be non-destructive: keep it only as a fallback if LLM fails/empty/toxicity.
+  // We do NOT hard-lock to social-only just because the message is a greeting.
   const socialOnly =
     allowSocialHumanization &&
     !conversationRouting.disableSocialFallback &&
-    (blockBusinessEngines ||
-      socialHardLock.active ||
-      Boolean(socialLayer?.isSocialPriority) ||
-      args.conversationState?.socialOnlyMode?.active === true);
+    (args.conversationState?.socialOnlyMode?.active === true);
 
   const quick =
     args.followupAfterHold === true || emotionProfile.blocks_social_quick
@@ -609,6 +608,7 @@ export async function generateAIReply(args: {
     };
   }
 
+  // Quick/social replies are allowed only when we are not running the main LLM pipeline.
   if (!forceMainPipeline && allowSocialHumanization && (quick || (socialOnly && blockBusinessEngines))) {
     const rawQuick =
       quick ??
