@@ -96,6 +96,7 @@ import { compressMemoryFacts } from "@/lib/ai/memory/memoryCompressor";
 import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
+import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import {
   getContextualFallback,
   safeGetContextualFallback,
@@ -1318,6 +1319,23 @@ export async function generateAIReply(args: {
   });
   (args.conversationState as any) = { ...(args.conversationState as any), ai_pressure_score: nextPressure };
   console.log("[AI_PRESSURE_SCORE]", { request_id: args.replyTurn?.request_id, ai_pressure_score: nextPressure });
+
+  // Add light, irregular human imperfections (rare, seeded).
+  // Must be subtle: avoids caricature, and runs before social bot-risk filtering.
+  const pbImp = (args.conversationState as any)?.prospect_behavior;
+  const efImp = (args.conversationState as any)?.emotional_flow;
+  const imperf = applyHumanImperfections({
+    text: cleaned,
+    seed: microSeed,
+    energy: pbImp?.energy01 ? (pbImp.energy01 > 0.65 ? "playful" : pbImp.energy01 < 0.35 ? "busy" : "focused") : undefined,
+    saturation01: efImp?.saturation01,
+    coldness01: pbImp?.coldness01,
+    humor01: pbImp?.humor01,
+  });
+  if (imperf.applied.length) {
+    cleaned = imperf.text;
+    console.log("[HUMAN_IMPERFECTION]", { request_id: args.replyTurn?.request_id, applied: imperf.applied });
+  }
 
   if (socialTeasing.active) {
     // Post-generation blacklist filter (works even if LLM ignores prompt).
