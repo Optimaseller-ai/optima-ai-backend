@@ -73,6 +73,11 @@ import type { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversat
 import { resolveSocialOnlyHardLock } from "@/lib/chat/pipeline/social-only-hard-lock";
 import { safeEngineExecute, safeEngineExecuteSync } from "@/lib/chat/pipeline/safe-engine-executor";
 import {
+  sanitizeConversationStateForLlm,
+  sanitizeHistoryForLlm,
+  sanitizeReplyTransformationChain,
+} from "@/lib/chat/pipeline/contamination-filter";
+import {
   PROMPT_BUDGET,
   compressChatHistory,
   prepareOpenRouterPayload,
@@ -217,6 +222,12 @@ export async function generateAIReply(args: {
   pipelineDebugger?: ConversationPipelineDebugger;
   replyTurn?: ReplyTurnContext;
 }): Promise<GenerateAIReplyResult> {
+  args = {
+    ...args,
+    conversationState: sanitizeConversationStateForLlm(args.conversationState),
+    history: sanitizeHistoryForLlm(Array.isArray(args.history) ? args.history : []).history,
+  };
+
   const dbg = args.pipelineDebugger;
   const pipelineStart = Date.now();
   console.log("[TRACE]", "generateAIReply_start", {
@@ -542,14 +553,14 @@ export async function generateAIReply(args: {
         return {
           reply: owned.reply,
           replyOwnership: owned,
-          replyTransformationChain: transformLogs,
+          replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
           socialOnlyMode: false,
         };
       }
     }
     return {
       reply: polishedMicro,
-      replyTransformationChain: transformLogs,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
       socialOnlyMode: false,
     };
   }
@@ -609,14 +620,14 @@ export async function generateAIReply(args: {
           return {
             reply: owned.reply,
             replyOwnership: owned,
-            replyTransformationChain: transformLogs,
+            replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
             socialOnlyMode: false,
           };
         }
       }
     return {
       reply: polishedPriority,
-      replyTransformationChain: transformLogs,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
       socialOnlyMode: false,
     };
   }
@@ -687,14 +698,14 @@ export async function generateAIReply(args: {
         reply: owned.reply,
         replyOwnership: owned,
         socialSupervisorInsights: socialLayer?.supervisor,
-        replyTransformationChain: transformLogs,
+        replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
         socialOnlyMode: true,
       };
     }
     return {
       reply: polished,
       socialSupervisorInsights: socialLayer?.supervisor,
-      replyTransformationChain: transformLogs,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
       socialOnlyMode: true,
     };
   }
@@ -1401,7 +1412,7 @@ export async function generateAIReply(args: {
       return {
         reply: "",
         replyOwnership: undefined,
-        replyTransformationChain: transformLogs,
+          replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
         socialOnlyMode: socialOnly,
         liveOrchestrator: orchestrator.liveState,
         supervisorInsights: salesDecision.insights,
@@ -1428,7 +1439,7 @@ export async function generateAIReply(args: {
   return {
     reply: cleaned,
     replyOwnership,
-    replyTransformationChain: transformLogs,
+    replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
     socialOnlyMode: socialOnly,
     liveOrchestrator: orchestrator.liveState,
     supervisorInsights: salesDecision.insights,

@@ -7,6 +7,11 @@ import { generateAIReply } from "@/lib/agents/business-context/reply";
 import { beginReplyTurn, isActiveReplyTurn } from "@/lib/chat/pipeline/central-reply-manager";
 import { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversation-pipeline-debugger";
 import { jsonSafe } from "@/lib/chat/pipeline/json-safe";
+import {
+  sanitizeConversationStateForLlm,
+  sanitizeHistoryForLlm,
+  sanitizeReplyTransformationChain,
+} from "@/lib/chat/pipeline/contamination-filter";
 
 export type FullReplyTimingDelays = {
   read?: number;
@@ -105,6 +110,16 @@ export async function runFullSellerReplyOrchestration(
       messageLen: input.message.length,
     });
 
+    const sanitizedConversationState = sanitizeConversationStateForLlm(input.conversation_state);
+    const sanitizedHistory = sanitizeHistoryForLlm(Array.isArray(input.history) ? input.history : []);
+    if (sanitizedHistory.dropped > 0) {
+      console.log("[OPTIMA_MEMORY_STATE] history_sanitized", {
+        request_id: input.request_id,
+        dropped: sanitizedHistory.dropped,
+        kept: sanitizedHistory.history.length,
+      });
+    }
+
     const mainPipeline = (async () => {
       return (await generateAIReply({
         message: input.message,
@@ -113,8 +128,8 @@ export async function runFullSellerReplyOrchestration(
         agentPersonality: input.agent_personality,
         salesStyle: input.sales_style,
         businessName: input.business_name,
-        conversationState: input.conversation_state,
-        history: input.history,
+        conversationState: sanitizedConversationState,
+        history: sanitizedHistory.history,
         agentRole: input.agent_role,
         agentTone: input.agent_tone,
         personaKey: input.persona_key ?? null,
@@ -155,7 +170,9 @@ export async function runFullSellerReplyOrchestration(
     const payload: Record<string, unknown> = {
       reply: gen.reply,
       socialOnlyMode: gen.socialOnlyMode,
-      replyTransformationChain: gen.replyTransformationChain,
+      replyTransformationChain: sanitizeReplyTransformationChain(
+        Array.isArray(gen.replyTransformationChain) ? (gen.replyTransformationChain as any[]) : [],
+      ),
       supervisorInsights: gen.supervisorInsights,
       emotionalSupervisorInsights: gen.emotionalSupervisorInsights,
       personalitySupervisorInsights: gen.personalitySupervisorInsights,
