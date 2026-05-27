@@ -10,7 +10,11 @@ function inferTurnKind(message: string): TurnKind {
   if (!m) return "unknown";
   const lower = m.toLowerCase();
   if (/^(salut|bonjour|bonsoir|cc|coucou)\b/.test(lower)) return "greeting";
-  if (/^(ok|oui|non|ça marche|d'accord|merci)\b/.test(lower)) return "simple_ack";
+  // Treat natural endings as “simple ack” to avoid systematic follow-up questions.
+  if (/^(ok|oui|non|ça marche|d'accord|merci|thanks|thx)\b/.test(lower)) return "simple_ack";
+  if (/\b(je vais voir|je verrai|je regarde|je vais regarder|on verra)\b/.test(lower)) return "simple_ack";
+  if (/\b(je passe demain|a demain|à demain|demain je passe)\b/.test(lower)) return "simple_ack";
+  if (/^(bonne\s*(soir(ée)?|journée)|bonne nuit|a\+|à\+|bye|ciao)\b/.test(lower)) return "simple_ack";
   if (/[?？]/.test(m)) return "question";
   if (/\b(trop cher|cher|prix|remise|promo|réduction)\b/.test(lower)) return "objection";
   if (/\b(rembour|retour|sav|problème|bug|cassé|pas reçu|livraison)\b/.test(lower)) return "complaint";

@@ -79,6 +79,8 @@ import {
 } from "@/lib/chat/pipeline/contamination-filter";
 import {
   detectWeakUserMessage,
+  detectConversationEnding,
+  pickEndingHumanReply,
   pickMinimalHumanReply,
   updateAiPressureScore,
 } from "@/lib/chat/pipeline/human-silence-engine";
@@ -421,6 +423,31 @@ export async function generateAIReply(args: {
     kind: weakSignal.kind,
     reason: weakSignal.reason,
   });
+
+  // Highest priority: accept natural endings (no follow-up, no relance, no sales).
+  // This must run before quick/social/LLM to avoid the “chatbot tries to keep convo alive” effect.
+  const endingSignal = detectConversationEnding(message);
+  if (!forceMainPipeline && endingSignal.ending && args.followupAfterHold !== true) {
+    const ending = pickEndingHumanReply({
+      userMessage: message,
+      lang: langForSocial,
+      seed: `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|ending|${endingSignal.kind}`,
+    });
+    console.log("[HUMAN_SILENCE_ENDING]", {
+      request_id: args.replyTurn?.request_id,
+      ending: true,
+      kind: endingSignal.kind,
+      reason: endingSignal.reason,
+      reply: ending.reply,
+    });
+    console.log("[NO_FOLLOWUP]", { request_id: args.replyTurn?.request_id, reason: "conversation_ending" });
+    dbg?.setMeta({ selectedStrategy: "HUMAN_ENDING" });
+    return {
+      reply: ending.reply,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
+      socialOnlyMode: false,
+    };
+  }
   if (replyManager && forceMainPipeline) {
     replyManager.markMainPipelineStarted();
   }
