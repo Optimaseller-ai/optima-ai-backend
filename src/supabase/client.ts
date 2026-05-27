@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { loadEnv } from "../config/env.js";
+import WebSocket from "ws";
 
 let admin: SupabaseClient | null | undefined;
 
@@ -16,6 +17,10 @@ export function getSupabaseAdmin(): SupabaseClient | null {
 
   admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
+    realtime: {
+      // Supabase expects a WebSocket constructor; `ws` is compatible at runtime.
+      transport: WebSocket as any,
+    },
   });
   return admin;
 }
