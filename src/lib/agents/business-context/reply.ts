@@ -54,6 +54,10 @@ import {
   type SocialSupervisorInsights,
 } from "@/lib/agents/social";
 import { resolveConversationRouting } from "@/lib/agents/social/business-conversation-router";
+import { detectSocialTeasing } from "@/lib/agents/social/social-teasing-detector";
+import { humanSocialResponseEngine } from "@/lib/agents/social/human-social-response-engine";
+import { computeBotRiskScore, stripSocialCommercialBlacklistedPhrases } from "@/lib/agents/social/social-bot-risk";
+import { stripBlacklistedPhrases } from "@/lib/ai/validators/humanEnough";
 import {
   beginReplyTurn,
   createCentralReplyOrchestrator,
@@ -321,6 +325,14 @@ export async function generateAIReply(args: {
     message,
     previous: args.conversationState?.emotionalContinuity,
   });
+
+  const socialTeasing = detectSocialTeasing({ message });
+  console.log("[SOCIAL_DETECTOR]", {
+    request_id: args.replyTurn?.request_id,
+    active: socialTeasing.active,
+    kind: socialTeasing.kind,
+    reason: socialTeasing.reason,
+  });
   console.log("[TRACE]", "emotion_analysis_end", {
     ms: Date.now() - pipelineStart,
     request_id: args.replyTurn?.request_id,
@@ -393,11 +405,12 @@ export async function generateAIReply(args: {
     ? false
     : conversationIntent.blockBusinessEngines ||
       socialConversation.blockBusinessEngines ||
-      socialHardLock.hardLock;
+      socialHardLock.hardLock ||
+      socialTeasing.active;
 
   dbg?.setMeta({
     socialSignal: conversationIntent.signal,
-    selectedStrategy: blockBusinessEngines ? `intent_${conversationIntent.intent}` : "commercial",
+    selectedStrategy: socialTeasing.active ? "SOCIAL_HUMAN" : blockBusinessEngines ? `intent_${conversationIntent.intent}` : "commercial",
     primaryIntent: conversationRouting.primaryIntent,
     disableSocialFallback: conversationRouting.disableSocialFallback,
     routingTopics: conversationRouting.topics,
@@ -552,7 +565,7 @@ export async function generateAIReply(args: {
     businessName: sellerProfile.businessName,
   });
 
-  if (priorityRaw) {
+  if (priorityRaw && !socialTeasing.active) {
     const hoursCtx = resolveBusinessHoursContext({
       facts: knowledgeProfile.facts,
       timezone: sellerProfile.businessIanaTimezone,
@@ -953,14 +966,15 @@ export async function generateAIReply(args: {
 
   const salesStage = {
     style: "balanced" as const,
-    objective:
-      prospectTurnIntent === "purchase_ready"
+    objective: socialTeasing.active
+      ? ("answer" as const)
+      : prospectTurnIntent === "purchase_ready"
         ? ("close" as const)
         : emotionStage.requiresEmpathy
           ? ("defuse" as const)
           : ("answer" as const),
-    urgency: prospectTurnIntent === "purchase_ready" ? ("high" as const) : ("medium" as const),
-    objectionHandling: prospectTurnIntent === "objection" || prospectTurnIntent === "price",
+    urgency: socialTeasing.active ? ("low" as const) : prospectTurnIntent === "purchase_ready" ? ("high" as const) : ("medium" as const),
+    objectionHandling: socialTeasing.active ? false : prospectTurnIntent === "objection" || prospectTurnIntent === "price",
   };
   console.log("[TRACE]", "sales_strategy_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
@@ -971,7 +985,7 @@ export async function generateAIReply(args: {
     turnCount,
     localHour: new Date().getHours(),
     emotionLabel: emotionStage.emotionLabel,
-    purchaseIntent: prospectTurnIntent === "purchase_ready",
+    purchaseIntent: !socialTeasing.active && prospectTurnIntent === "purchase_ready",
   });
 
   const personalityStage = {
@@ -1032,7 +1046,16 @@ export async function generateAIReply(args: {
         .map((l) => l.replace(/^[\-\*\s]+/, "").trim())
         .filter(Boolean)
     : [];
-  const memFacts = compressMemoryFacts({ facts: learningFactsRaw, limit: 3 });
+  const cleanedLearningFacts = learningFactsRaw
+    .map((l) => {
+      const social = stripSocialCommercialBlacklistedPhrases({ reply: l, lang: langForBrain as any });
+      if (social.removed.length) return null;
+      const support = stripBlacklistedPhrases(l);
+      if (support.removed.length) return null;
+      return support.text;
+    })
+    .filter((x): x is string => Boolean(x));
+  const memFacts = compressMemoryFacts({ facts: cleanedLearningFacts, limit: 3 });
   console.log("[MEMORY_COMPRESSION]", {
     request_id: args.replyTurn?.request_id,
     factsBefore: learningFactsRaw.length,
@@ -1192,6 +1215,52 @@ export async function generateAIReply(args: {
 
   cleaned = stripFakeVerificationPhrases(cleaned, langForBrain, false);
 
+  if (socialTeasing.active) {
+    // Post-generation blacklist filter (works even if LLM ignores prompt).
+    const filtered = stripSocialCommercialBlacklistedPhrases({ reply: cleaned, lang: langForBrain as any });
+    const supportFiltered = stripBlacklistedPhrases(filtered.text);
+
+    const finalText = supportFiltered.text || filtered.text;
+    console.log("[POST_BLACKLIST_FILTER]", {
+      request_id: args.replyTurn?.request_id,
+      removed: Array.from(new Set([...(filtered.removed ?? []), ...(supportFiltered.removed ?? [])])),
+      beforeLen: cleaned.length,
+      afterLen: finalText.length,
+    });
+
+    const { botRisk, hits } = computeBotRiskScore({ reply: finalText, lang: langForBrain as any });
+    const humanAuthenticityScore = Number((1 - botRisk).toFixed(3));
+    console.log("[HUMAN_AUTHENTICITY_SCORE]", {
+      request_id: args.replyTurn?.request_id,
+      humanAuthenticityScore,
+      hits,
+    });
+    console.log("[BOT_RISK_SCORE]", {
+      request_id: args.replyTurn?.request_id,
+      botRisk,
+      hits,
+    });
+
+    // If still too “botty”, replace with short human-social response.
+    if (botRisk > 0.4) {
+      console.log("[HUMAN_SOCIAL_RESPONSE_ENGINE]", {
+        request_id: args.replyTurn?.request_id,
+        reason: "botRisk_above_threshold",
+      });
+      cleaned = humanSocialResponseEngine({
+        message,
+        reply: cleaned,
+        agentName: sellerProfile.agentName,
+        businessName: sellerProfile.businessName,
+        lang: langForBrain as any,
+        teasing: socialTeasing,
+        seed: microSeed,
+      });
+    } else {
+      cleaned = finalText;
+    }
+  }
+
   console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const deliveryPlan = buildHumanDeliveryPlan({ replyText: cleaned });
   console.log("[TRACE]", "delivery_simulation_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, ...deliveryPlan });
@@ -1220,30 +1289,80 @@ export async function generateAIReply(args: {
   const emotionalIntel = emotionalRun.result!;
   dbg?.setMeta({ detectedEmotion: emotionalIntel.state.dominantEmotion });
 
-  const salesDecisionRun = safeEngineExecuteSync({
-    engine: "sales_decision",
-    step: "strategy",
-    debugger: dbg,
-    fallback: () =>
-      runSalesDecisionEngine({
-        message,
-        sellerIntent: "other",
-        lang: langForBrain,
-      }),
-    run: () =>
-      runSalesDecisionEngine({
-        message,
-        sellerIntent: args.conversationState?.lastSellerIntent ?? "other",
-        conversationProfile: args.conversationState?.conversationProfile,
-        commercialMemory: args.conversationState?.commercialMemory,
-        salesSignalsMemory: args.conversationState?.salesSignalsMemory,
-        stats: args.conversationState?.stats,
-        lang: langForBrain,
-        blockAggressiveClose:
-          emotionalIntel.adaptation.blockAggressiveClose || socialLayer?.suppressSalesUrgency === true,
-      }),
-  });
-  const salesDecision = salesDecisionRun.result!;
+  let salesDecision: ReturnType<typeof runSalesDecisionEngine>;
+  if (socialTeasing.active) {
+    console.log("[SALES_BYPASS]", {
+      request_id: args.replyTurn?.request_id,
+      reason: socialTeasing.reason,
+    });
+    // Build a minimal safe “social” decision object so downstream code keeps working.
+    salesDecision = {
+      insights: {
+        analysis: {
+          temperature: "Warm",
+          emotion: "Joking",
+          trust: "Medium",
+          intention: "Medium",
+          activeObjections: [],
+          conversationFatigue: 0.2,
+          conversionProbability: 30,
+          suggestedStrategy: "SOFT_CONVERSATION",
+          reasoning: "social_teasing_bypass",
+        },
+      },
+      activeStrategy: "SOFT_CONVERSATION",
+      analysis: {
+        temperature: "Warm",
+        emotion: "Joking",
+        trust: "Medium",
+        intention: "Medium",
+        activeObjections: [],
+        conversationFatigue: 0.2,
+        conversionProbability: 30,
+        suggestedStrategy: "SOFT_CONVERSATION",
+        reasoning: "social_teasing_bypass",
+      },
+      strategyInstruction: "",
+      closingLevel: "soft",
+      closingLinesFr: [],
+      closingLinesEn: [],
+      objectionHints: [],
+      upsell: undefined,
+      followupHint: undefined,
+      guards: {
+        blockHardClose: false,
+        blockUpsell: true,
+        softenTone: true,
+        reasons: ["social_teasing"],
+      },
+      promptSummaryFr: "SOCIAL_HUMAN: rapport, pas de vente",
+    };
+  } else {
+    const salesDecisionRun = safeEngineExecuteSync({
+      engine: "sales_decision",
+      step: "strategy",
+      debugger: dbg,
+      fallback: () =>
+        runSalesDecisionEngine({
+          message,
+          sellerIntent: "other",
+          lang: langForBrain,
+        }),
+      run: () =>
+        runSalesDecisionEngine({
+          message,
+          sellerIntent: args.conversationState?.lastSellerIntent ?? "other",
+          conversationProfile: args.conversationState?.conversationProfile,
+          commercialMemory: args.conversationState?.commercialMemory,
+          salesSignalsMemory: args.conversationState?.salesSignalsMemory,
+          stats: args.conversationState?.stats,
+          lang: langForBrain,
+          blockAggressiveClose:
+            emotionalIntel.adaptation.blockAggressiveClose || socialLayer?.suppressSalesUrgency === true,
+        }),
+    });
+    salesDecision = salesDecisionRun.result!;
+  }
 
   const personalityRun = safeEngineExecuteSync({
     engine: "personality_consistency",
