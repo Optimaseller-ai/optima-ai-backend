@@ -11,6 +11,16 @@ import { detectKnowledgeTopics } from "@/lib/business-knowledge/topic-detector";
 import { shouldRunKnowledgeEmbedding, shouldSearchCatalog } from "@/lib/business-knowledge/should-search-catalog";
 import { loadBusinessKnowledgeProfile } from "@/lib/business-knowledge/profile/business-knowledge-profile";
 import {
+  buildBusinessKnowledgeBase,
+  buildServiceGroundedFallback,
+  formatBusinessKnowledgeBaseBlock,
+} from "@/lib/business-brain/context/business-knowledge-base";
+import { detectBusinessIntent } from "@/lib/business-brain/intent/business-intent-detector";
+import { formatStrictNoHallucinationBlock } from "@/lib/business-brain/grounding/strict-grounding";
+import { validateAndCleanOutgoingReply } from "@/lib/ai/validators/response-grounding-validator";
+import { cleanMemoryFacts } from "@/lib/ai/memory/conversation-memory-cleaner";
+import { stripAiSpeakerLabels } from "@/lib/chat/pipeline/strip-ai-labels";
+import {
   resolveBusinessHoursContext,
   stripFakeVerificationPhrases,
 } from "@/lib/agents/business-data/business-data-priority";
@@ -108,7 +118,6 @@ import {
 import { chooseOpenRouterModel } from "@/lib/ai/openrouter/modelPolicy";
 import { inferDynamicEnergy } from "@/lib/ai/dynamicEnergyEngine";
 import { buildHumanBehaviorPlan } from "@/lib/ai/humanBehaviorEngine";
-import { compressMemoryFacts } from "@/lib/ai/memory/memoryCompressor";
 import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
@@ -441,7 +450,23 @@ export async function generateAIReply(args: {
     args.conversationState?.conversationSocialV2?.welcomeDelivered === true || turnCount >= 2;
   const allowEmoji = (args.conversationState?.conversationalEtiquette?.repliesSinceLastEmoji ?? 7) >= 7;
 
-  const conversationRouting = resolveConversationRouting({ message });
+  const businessIntentProbe = detectBusinessIntent(message);
+  console.log("[BUSINESS_INTENT]", {
+    request_id: args.replyTurn?.request_id,
+    intent: businessIntentProbe.intent,
+    isCommercialLead: businessIntentProbe.isCommercialLead,
+    blockSocialOnly: businessIntentProbe.blockSocialOnly,
+    reason: businessIntentProbe.reason,
+  });
+
+  const conversationRouting = resolveConversationRouting({
+    message,
+    topics: businessIntentProbe.blockSocialOnly ? businessIntentProbe.topics : undefined,
+  });
+  if (businessIntentProbe.blockSocialOnly) {
+    conversationRouting.disableSocialFallback = true;
+    conversationRouting.allowSocialOnlyMode = false;
+  }
 
   const replyTurn =
     args.replyTurn ??
@@ -1026,6 +1051,31 @@ export async function generateAIReply(args: {
           .filter(Boolean)
       : [];
 
+  const knowledgeProfileBundle = await loadBusinessKnowledgeProfile(admin, userId);
+  const catalogPoolForKb = catalogBrief.length ? catalogBrief : knowledgeSearch.products;
+  const businessKnowledgeBase = buildBusinessKnowledgeBase({
+    profile: knowledgeSearch.profile,
+    identity: profileRowToIdentity({
+      business_name: sellerProfile.businessName,
+      business_type: sellerProfile.sector,
+      country: sellerProfile.country,
+      city: sellerProfile.city,
+      offer: knowledgeProfileBundle.facts.companyImportantNotes?.split("\n")[0]?.trim(),
+      goal: undefined,
+    } as any),
+    facts: { ...knowledgeSearch.facts, ...knowledgeProfileBundle.facts },
+    products: catalogPoolForKb,
+    faqEntries: knowledgeSearch.faqEntries,
+  });
+  const businessContextBlock = formatBusinessKnowledgeBaseBlock(businessKnowledgeBase, langForBrain);
+  const strictGroundingBlock = formatStrictNoHallucinationBlock(langForBrain);
+  console.log("[BUSINESS_BRAIN]", {
+    request_id: args.replyTurn?.request_id,
+    categories: businessKnowledgeBase.product_categories,
+    productCount: businessKnowledgeBase.products.length,
+    servicesCount: businessKnowledgeBase.services.length,
+  });
+
   const businessKnowledge = retrieveBusinessContextFromSnapshot({
     userId,
     prospectMessage: message,
@@ -1274,12 +1324,13 @@ export async function generateAIReply(args: {
       return support.text;
     })
     .filter((x): x is string => Boolean(x));
-  const memFacts = compressMemoryFacts({ facts: cleanedLearningFacts, limit: 3 });
+  const memFacts = cleanMemoryFacts({ facts: cleanedLearningFacts, limit: 3 });
   console.log("[MEMORY_COMPRESSION]", {
     request_id: args.replyTurn?.request_id,
     factsBefore: learningFactsRaw.length,
     factsAfter: memFacts.facts.length,
-    dropped: memFacts.dropped,
+    removedDuplicates: memFacts.removedDuplicates,
+    removedNoise: memFacts.removedNoise,
   });
 
   console.log("[TRACE]", "dynamic_prompt_builder_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
@@ -1296,6 +1347,8 @@ export async function generateAIReply(args: {
     personality: personalityStage,
     human: humanPlan,
     attempt: 1,
+    businessContextBlock,
+    strictGroundingBlock,
   });
   console.log("[TRACE]", "dynamic_prompt_builder_end", {
     ms: Date.now() - pipelineStart,
@@ -1391,6 +1444,8 @@ export async function generateAIReply(args: {
           personality: personalityStage,
           human: humanPlan,
           attempt,
+          businessContextBlock,
+          strictGroundingBlock,
         });
         const retryPayload = prepareOpenRouterPayload(rebundle.systemPrompt, rebundle.userPrompt, {
           userMessageLen: message.length,
@@ -1410,11 +1465,74 @@ export async function generateAIReply(args: {
         finalPromptTokens: openRouterPayload.finalPromptTokens,
         finalMaxTokens: openRouterPayload.finalMaxTokens,
       });
-      return postProcessPremiumReply(raw, postOpts);
+
+      let processed = stripAiSpeakerLabels(postProcessPremiumReply(raw, postOpts), sellerProfile.agentName);
+      let grounding = validateAndCleanOutgoingReply({
+        reply: processed,
+        userMessage: message,
+        knowledgeBase: businessKnowledgeBase,
+        agentName: sellerProfile.agentName,
+      });
+
+      if (!grounding.ok && grounding.shouldRegenerate) {
+        console.log("[GROUNDING_VALIDATION]", {
+          request_id: args.replyTurn?.request_id,
+          ok: false,
+          issues: grounding.issues,
+          regenerate: true,
+        });
+        const regenBundle = buildDynamicPromptBundle({
+          agentName: sellerProfile.agentName,
+          businessName: sellerProfile.businessName,
+          message,
+          historyText,
+          productsText: promptCtx.productsText,
+          chunksText: promptCtx.chunksText,
+          learningFacts: memFacts.facts,
+          emotion: emotionStage,
+          sales: salesStage,
+          personality: personalityStage,
+          human: humanPlan,
+          attempt: 3,
+          businessContextBlock,
+          strictGroundingBlock: `${strictGroundingBlock}\nCORRECTION: réponse précédente invalide (${grounding.issues.join(", ")}). Répondre UNIQUEMENT avec BUSINESS_CONTEXT.`,
+        });
+        const regenPayload = prepareOpenRouterPayload(regenBundle.systemPrompt, regenBundle.userPrompt, {
+          userMessageLen: message.length,
+        });
+        const regenWithModel = Object.assign(regenPayload, {
+          model: modelChoice.model,
+          maxTokensOverride: 180,
+        });
+        raw = await openRouterChatWithOneRetry(regenWithModel);
+        processed = stripAiSpeakerLabels(postProcessPremiumReply(raw, postOpts), sellerProfile.agentName);
+        grounding = validateAndCleanOutgoingReply({
+          reply: processed,
+          userMessage: message,
+          knowledgeBase: businessKnowledgeBase,
+          agentName: sellerProfile.agentName,
+        });
+      }
+
+      if (!grounding.ok) {
+        console.log("[GROUNDING_VALIDATION]", {
+          request_id: args.replyTurn?.request_id,
+          ok: false,
+          issues: grounding.issues,
+          fallback: true,
+        });
+        if (businessIntentProbe.intent === "service_inquiry") {
+          processed = buildServiceGroundedFallback(businessKnowledgeBase, langForBrain);
+        }
+      } else {
+        console.log("[GROUNDING_VALIDATION]", { request_id: args.replyTurn?.request_id, ok: true });
+      }
+
+      return grounding.cleanedReply || processed;
     },
   });
 
-  let cleaned =
+  let cleaned = stripAiSpeakerLabels(
     llmRun.result ??
     pickContextualFallback({
       lang: langForFallback,
@@ -1425,7 +1543,9 @@ export async function generateAIReply(args: {
       kind: "generate_failed",
       topics: fallbackTopics,
       allowEmoji: true,
-    });
+    }),
+    sellerProfile.agentName,
+  );
   if (!llmRun.ok) {
     dbg?.setMeta({ responseMode: "fallback", fallbackKind: "generate_failed", fallbackReason: llmRun.fallbackReason });
   } else {

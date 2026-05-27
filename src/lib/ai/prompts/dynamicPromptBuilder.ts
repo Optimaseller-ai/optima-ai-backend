@@ -41,6 +41,8 @@ export function buildDynamicPromptBundle(input: {
   personality: PersonalityOutput;
   human: HumanBehaviorPlan;
   attempt?: number;
+  businessContextBlock?: string;
+  strictGroundingBlock?: string;
 }): DynamicPromptBundle {
   const included: Array<{ key: string; text: string }> = [];
 
@@ -69,6 +71,8 @@ export function buildDynamicPromptBundle(input: {
   const factsBlock = facts.length ? `Mémoire utile (facts):\n- ${facts.join("\n- ")}` : "";
 
   const systemPrompt = joinNonEmpty([
+    input.strictGroundingBlock,
+    input.businessContextBlock,
     included.map((m) => m.text).join("\n\n"),
     "Contexte:",
     contextHeader,

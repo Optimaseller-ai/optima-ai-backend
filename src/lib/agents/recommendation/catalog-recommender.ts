@@ -7,6 +7,9 @@ export type CatalogRecoNeed = {
   wantsBattery?: boolean;
   wantsBusiness?: boolean;
   wantsCheap?: boolean;
+  wantsHeadphones?: boolean;
+  wantsSport?: boolean;
+  categoryHint?: string | null;
   brandHint?: string | null;
   budgetMaxFcfa?: number | null;
 };
@@ -52,9 +55,17 @@ export function inferCatalogNeed(input: { message: string; productMemory?: Produ
   const wantsBattery = /\b(batterie|autonomie|tient|tienne|longue durée|longue duree)\b/i.test(m);
   const wantsBusiness = /\b(business|pro|travail|boulot|bureau|teams|mail|email)\b/i.test(m);
   const wantsCheap = /\b(pas cher|moins cher|petit budget|budget|économique|economique)\b/i.test(m);
+  const wantsHeadphones = /\b(écouteur|ecouteur|casque|earbud|airpods|headphone|buds)\b/i.test(m);
+  const wantsSport = /\b(sport|running|course|gym|fitness|sweat|entrainement|entraînement)\b/i.test(m);
 
   const brand =
     m.match(/\b(iphone|apple|samsung|xiaomi|redmi|tecno|infinix|oppo|realme|nokia)\b/i)?.[1] ?? null;
+
+  const categoryHint = wantsHeadphones
+    ? "écouteurs"
+    : wantsSport
+      ? "sport"
+      : null;
 
   return {
     wantsPhoto,
@@ -62,6 +73,9 @@ export function inferCatalogNeed(input: { message: string; productMemory?: Produ
     wantsBattery,
     wantsBusiness,
     wantsCheap,
+    wantsHeadphones,
+    wantsSport,
+    categoryHint,
     brandHint: brand ? brand.toLowerCase() : null,
     budgetMaxFcfa: budgetMax,
   };
@@ -157,6 +171,18 @@ export function recommendFromCatalog(args: {
     if (need.wantsCheap && typeof p.priceFcfa === "number") {
       score += 0.4;
       reasons.push("budget");
+    }
+    if (need.wantsHeadphones && /\b(écouteur|ecouteur|casque|earbud|buds|audio)\b/i.test(hay)) {
+      score += 2.8;
+      reasons.push("écouteurs");
+    }
+    if (need.categoryHint && p.category && norm(p.category).includes(norm(need.categoryHint))) {
+      score += 2.2;
+      reasons.push("catégorie");
+    }
+    if (need.wantsSport && /\b(sport|bluetooth|sans\s+fil|waterproof|ipx)\b/i.test(hay)) {
+      score += 1.8;
+      reasons.push("sport");
     }
 
     // Stock confidence: slightly boost if stock known and >0 (human “dispo”).

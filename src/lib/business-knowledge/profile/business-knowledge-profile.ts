@@ -102,8 +102,20 @@ export function mergeProfileKnowledgeFacts(
   const locationBits = [id.city, id.country].filter(Boolean);
   if (locationBits.length && merged.deliveryZonesNotes) {
     merged.deliveryZonesNotes = `Siège / ville principale : ${locationBits.join(", ")}.\n${merged.deliveryZonesNotes}`;
-  } else if (locationBits.length && !merged.deliveryZonesNotes) {
+  } else   if (locationBits.length && !merged.deliveryZonesNotes) {
     merged.deliveryZonesNotes = `Zone principale : ${locationBits.join(", ")}.`;
+  }
+
+  if (id.offer?.trim()) {
+    const offerLine = id.offer.trim();
+    if (!merged.companyImportantNotes?.includes(offerLine)) {
+      merged.companyImportantNotes = [offerLine, merged.companyImportantNotes].filter(Boolean).join("\n");
+    }
+    if (!merged.commercialInstructions?.includes(offerLine)) {
+      merged.commercialInstructions = merged.commercialInstructions
+        ? `${offerLine}\n${merged.commercialInstructions}`
+        : offerLine;
+    }
   }
 
   return merged;

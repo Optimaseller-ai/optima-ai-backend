@@ -27,6 +27,9 @@ export type ConversationIntentResult = {
 const SALES_STRONG =
   /\b(prix|stock|dispo|commander|acheter|livraison|modèle|modele|article|lien|payer|fcfa|€|devis|je\s+veux|besoin\s+d['’']?un|i\s+want\s+to\s+buy|quiero\s+comprar)\b/i;
 
+const SERVICE_OR_OFFER =
+  /\b(service|services|vous\s+proposez|vous\s+faitez|qu'?est-ce\s+que\s+vous|c'est\s+quoi\s+vos|cest\s+quoi\s+vos|activit[eé]|offre|sp[eé]cialit[eé]|catalogue)\b/i;
+
 const SUPPORT =
   /\b(réclamation|plainte|rembours|retour|sav|panne|cassé|casse|défectueux|inadmissible)\b/i;
 
@@ -86,6 +89,16 @@ export function classifyConversationIntent(args: {
   const lower = msg.toLowerCase();
   const routing = resolveConversationRouting({ message: msg, topics: args.topics });
   const disableSocial = args.disableSocialFallback ?? routing.disableSocialFallback;
+
+  // "C'est quoi vos services ?" = lead commercial, not social_only.
+  if (SERVICE_OR_OFFER.test(lower)) {
+    return {
+      intent: "sales",
+      blockBusinessEngines: false,
+      signal: "service_inquiry",
+      reasoning: "service_or_offer_inquiry",
+    };
+  }
 
   if (disableSocial) {
     const routed = intentFromRoutingPrimary(routing.primaryIntent);
@@ -173,7 +186,7 @@ export function classifyConversationIntent(args: {
   if (socialIntent.kind === "personal_question" || socialIntent.kind === "curiosity" || /\?/.test(msg)) {
     return {
       intent: "curiosity",
-      blockBusinessEngines: !SALES_STRONG.test(lower),
+      blockBusinessEngines: !SALES_STRONG.test(lower) && !SERVICE_OR_OFFER.test(lower),
       signal: socialIntent.kind,
       reasoning: "curiosity_or_personal_question",
     };

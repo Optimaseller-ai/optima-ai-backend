@@ -10,7 +10,7 @@ const TOPIC_PATTERNS: Record<KnowledgeTopic, RegExp> = {
   price: /\b(prix|tarif|combien|coût|cout|budget|fcfa|cfa|€|\$|remise|promo\s*%|devis)\b/i,
   stock: /\b(stock|dispo|disponible|disponibilité|rupture|épuisé|epuise|reste|combien\s+il\s+reste)\b/i,
   promotion: /\b(promo|promotion|offre|réduction|reduction|solde|black\s+friday)\b/i,
-  faq: /\b(comment|pourquoi|est-ce\s+que|puis-je|puis\s+je|garantie|original|authentique)\b/i,
+  faq: /\b(comment|pourquoi|est-ce\s+que|puis-je|puis\s+je|garantie|original|authentique|service|services|vous\s+proposez|activit[eé]|offre)\b/i,
   hours: /\b(horaire|horaires|ouvert|ouverte|ouverts|fermé|ferme|dimanche|samedi|aujourd'hui|maintenant|heure|passer\s+à)\b/i,
   delivery: /\b(livraison|livrer|expédition|expedition|délai|delai|transport|retrait|point\s+relai|douala|yaoundé|yaounde)\b/i,
   sav: /\b(sav|service\s+après|apres\s+vente|panne|défaut|defaut|réparation|reparation|garantie)\b/i,

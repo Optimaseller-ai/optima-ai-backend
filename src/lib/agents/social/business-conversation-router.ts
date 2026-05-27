@@ -16,7 +16,7 @@ export const CONVERSATION_INTENT_PRIORITY = [
 export type ConversationRoutingIntent = (typeof CONVERSATION_INTENT_PRIORITY)[number];
 
 const COMMERCIAL_OVERRIDE =
-  /\b(prix|stock|dispo|commander|acheter|livraison|modèle|modele|article|lien|payer|fcfa|€|devis|je\s+veux|besoin\s+d['’']?un|iphone|samsung|téléphone|telephone)\b/i;
+  /\b(prix|stock|dispo|commander|acheter|livraison|modèle|modele|article|lien|payer|fcfa|€|devis|je\s+veux|besoin\s+d['’']?un|iphone|samsung|téléphone|telephone|service|services|vous\s+proposez|vous\s+faitez|c'est\s+quoi\s+vos|cest\s+quoi\s+vos|activit[eé]|offre|sp[eé]cialit[eé]|catalogue|écouteur|ecouteur|casque|gadget|accessoire)\b/i;
 
 const COMPLAINT_RE =
   /\b(réclamation|plainte|rembours|retour|sav|panne|cassé|casse|défectueux|inadmissible|insatisfait|arnaque|déçu|decu|dommage|franchement|fermé|fermée|ferme|c['']était\s+fermé|pas\s+trouvé|déplacement\s+inutile)\b/i;
