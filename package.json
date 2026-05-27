@@ -7,9 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node -r ./scripts/preload-server-only-stub.cjs ./node_modules/tsx/dist/cli.mjs --tsconfig ../tsconfig.json ./src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node -r ./scripts/preload-server-only-stub.cjs ./node_modules/tsx/dist/cli.mjs --tsconfig ../tsconfig.json ./src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

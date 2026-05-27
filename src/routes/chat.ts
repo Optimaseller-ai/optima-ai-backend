@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { runReplyOrchestration } from "../core/orchestrator/reply-orchestrator.js";
+import { runFullSellerReplyOrchestration } from "../core/orchestrator/full-seller-reply-orchestrator.js";
 import { openRouterChat, openRouterEmbed } from "../core/orchestrator/openrouter-client.js";
 import { verifyBackendAuth } from "../services/auth.js";
 
@@ -9,13 +9,29 @@ const ChatMessageSchema = z.object({
   content: z.string().min(1).max(16_000),
 });
 
-const ChatReplyBodySchema = z.object({
+const HistoryTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1).max(4000),
+});
+
+/** Full seller orchestration (same brain as Vercel `generateAIReply`). */
+const FullSellerChatReplyBodySchema = z.object({
   session_id: z.string().trim().min(8).max(200),
   request_id: z.string().trim().min(8).max(120),
+  pipeline_trace_id: z.string().trim().min(4).max(320),
   message: z.string().trim().min(1).max(4000),
-  messages: z.array(ChatMessageSchema).min(1).max(32),
-  model: z.string().optional(),
-  max_tokens: z.number().int().min(64).max(4096).optional(),
+  user_id: z.string().uuid(),
+  agent_id: z.string().uuid().optional(),
+  agent_name: z.string().trim().max(120).optional(),
+  agent_personality: z.enum(["chaleureux", "professionnel", "dynamique"]).optional(),
+  sales_style: z.enum(["conseiller", "closer", "premium"]).optional(),
+  business_name: z.string().trim().max(200).optional(),
+  conversation_state: z.record(z.unknown()).optional(),
+  history: z.array(HistoryTurnSchema).max(32).optional(),
+  agent_role: z.string().max(400).optional(),
+  agent_tone: z.string().max(200).optional(),
+  persona_key: z.string().nullable().optional(),
+  followup_after_hold: z.boolean().optional(),
   timing: z
     .object({
       read: z.number().int().min(0).max(60_000).optional(),
@@ -39,13 +55,13 @@ const EmbedBodySchema = z.object({
 });
 
 export async function chatRoutes(app: FastifyInstance) {
-  /** Orchestrated reply — Phase 1 migration entry (OpenRouter + Redis locks). */
+  /** Full seller reply — `generateAIReply` + Redis locks + human timing jobs. */
   app.post("/v1/chat/reply", async (req, reply) => {
     if (!verifyBackendAuth(req)) {
       return reply.status(401).send({ error: "unauthorized" });
     }
 
-    const parsed = ChatReplyBodySchema.safeParse(req.body);
+    const parsed = FullSellerChatReplyBodySchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     }
@@ -53,13 +69,24 @@ export async function chatRoutes(app: FastifyInstance) {
     const body = parsed.data;
 
     try {
-      const result = await runReplyOrchestration({
-        sessionId: body.session_id,
-        requestId: body.request_id,
+      req.log.info({ path: "/v1/chat/reply" }, "[OPTIMA_RAILWAY_ORCHESTRATOR] incoming_full_reply");
+      const result = await runFullSellerReplyOrchestration({
+        session_id: body.session_id,
+        request_id: body.request_id,
+        pipeline_trace_id: body.pipeline_trace_id,
         message: body.message,
-        messages: body.messages,
-        model: body.model,
-        maxTokens: body.max_tokens,
+        user_id: body.user_id,
+        agent_id: body.agent_id,
+        agent_name: body.agent_name,
+        agent_personality: body.agent_personality,
+        sales_style: body.sales_style,
+        business_name: body.business_name,
+        conversation_state: body.conversation_state,
+        history: body.history,
+        agent_role: body.agent_role,
+        agent_tone: body.agent_tone,
+        persona_key: body.persona_key ?? null,
+        followup_after_hold: body.followup_after_hold,
         timing: body.timing,
       });
 
@@ -67,13 +94,18 @@ export async function chatRoutes(app: FastifyInstance) {
         ok: true,
         reply: result.reply,
         source: result.source,
-        request_id: result.requestId,
-        timing_scheduled: result.timingScheduled,
+        request_id: result.request_id,
+        timing_scheduled: result.timing_scheduled,
+        payload: result.payload,
+        orchestrator_pipeline_debug: result.orchestrator_pipeline_debug,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === "DUPLICATE_REPLY_REQUEST") {
         return reply.status(409).send({ error: "duplicate_request" });
+      }
+      if (msg === "STALE_REPLY_TURN") {
+        return reply.status(409).send({ error: "stale_reply_turn" });
       }
       req.log.error(e);
       return reply.status(502).send({ error: "orchestration_failed", message: msg });
@@ -82,7 +114,9 @@ export async function chatRoutes(app: FastifyInstance) {
 
   /** Thin OpenRouter proxy — drop-in replacement for Vercel openRouterChat(). */
   app.post("/v1/llm/chat", async (req, reply) => {
+    req.log.info({ path: "/v1/llm/chat" }, "[OPTIMA_AI_BACKEND] incoming_openrouter_chat");
     if (!verifyBackendAuth(req)) {
+      req.log.warn("[OPTIMA_AI_BACKEND] unauthorized /v1/llm/chat");
       return reply.status(401).send({ error: "unauthorized" });
     }
 
@@ -110,7 +144,9 @@ export async function chatRoutes(app: FastifyInstance) {
   });
 
   app.post("/v1/llm/embed", async (req, reply) => {
+    req.log.info({ path: "/v1/llm/embed" }, "[OPTIMA_AI_BACKEND] incoming_openrouter_embed");
     if (!verifyBackendAuth(req)) {
+      req.log.warn("[OPTIMA_AI_BACKEND] unauthorized /v1/llm/embed");
       return reply.status(401).send({ error: "unauthorized" });
     }
 
