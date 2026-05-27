@@ -533,12 +533,8 @@ export async function runChatCore(raw: unknown): Promise<ChatCoreResponse> {
 
   const plan = parsed.data.plan === "pro" ? "pro" : "free";
 
-  const primaryModel: AllowedModel = parsed.data.model ?? "openai/gpt-4o-mini";
-  const fallbackModels: AllowedModel[] = [
-    "deepseek/deepseek-chat-v3",
-    "anthropic/claude-3.5-sonnet",
-    "perplexity/sonar",
-  ].filter((m) => m !== primaryModel) as AllowedModel[];
+  const primaryModel: AllowedModel = "openai/gpt-4o-mini";
+  const fallbackModels: AllowedModel[] = [];
 
   const mode: CoreMode = parsed.data.mode ?? "reply";
   const historyMaxAgeMs = plan === "pro" ? Infinity : 3 * 24 * 60 * 60 * 1000;

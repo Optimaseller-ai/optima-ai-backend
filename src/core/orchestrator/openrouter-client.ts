@@ -47,7 +47,7 @@ export async function openRouterChat(args: {
     throw new Error("Missing OPENROUTER_API_KEY on AI backend");
   }
 
-  const model = args.model ?? env.OPENROUTER_MODEL;
+  const model = args.model ?? "openai/gpt-4o-mini";
   const timeoutMs = args.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const maxTokens = args.maxTokens ?? 1200;
   const temperature = args.temperature ?? 0.85;

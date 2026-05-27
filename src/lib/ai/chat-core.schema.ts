@@ -2,9 +2,6 @@ import { z } from "zod";
 
 export const ALLOWED_MODELS = [
   "openai/gpt-4o-mini",
-  "deepseek/deepseek-chat-v3",
-  "anthropic/claude-3.5-sonnet",
-  "perplexity/sonar",
 ] as const;
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];
 

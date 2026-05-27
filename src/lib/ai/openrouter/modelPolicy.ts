@@ -8,18 +8,11 @@ export type ModelChoice = {
   reason: string;
 };
 
-export const OPENROUTER_FALLBACK_MODELS = [
-  "anthropic/claude-3.5-sonnet",
-  "google/gemini-2.5-pro",
-  "openai/gpt-4o-mini",
-] as const;
+export const DEFAULT_MODEL = "openai/gpt-4o-mini" as const;
+export const MODEL_FALLBACKS = [DEFAULT_MODEL] as const;
 
 export function chooseOpenRouterModel(input?: ModelPolicyInput): ModelChoice {
-  const preferQuality = input?.preferHumanQuality ?? true;
-  const latency = input?.latencyBudgetMs ?? 25_000;
-
-  if (preferQuality && latency >= 18_000) return { model: OPENROUTER_FALLBACK_MODELS[0], reason: "prefer_human_quality" };
-  if (latency >= 18_000) return { model: OPENROUTER_FALLBACK_MODELS[1], reason: "balanced_quality_latency" };
-  return { model: OPENROUTER_FALLBACK_MODELS[2], reason: "fast_fallback" };
+  void input;
+  return { model: DEFAULT_MODEL, reason: "single_model_lock" };
 }
 
