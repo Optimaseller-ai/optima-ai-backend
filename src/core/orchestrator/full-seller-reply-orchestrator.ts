@@ -1,12 +1,12 @@
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import type { OpenRouterMessage } from "./openrouter-client.js";
 import { openRouterChat } from "./openrouter-client.js";
 import { acquireReplyLock, releaseReplyLock } from "../../redis/anti-duplicate.js";
 import { setTypingState, clearTypingState } from "../../redis/typing-state.js";
 import { scheduleTimingJob, type TimingJobKind } from "../../queue/timing-queue.js";
+import { generateAIReply } from "@/lib/agents/business-context/reply";
+import { beginReplyTurn, isActiveReplyTurn } from "@/lib/chat/pipeline/central-reply-manager";
+import { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversation-pipeline-debugger";
+import { jsonSafe } from "@/lib/chat/pipeline/json-safe";
 
 export type FullReplyTimingDelays = {
   read?: number;
@@ -47,42 +47,9 @@ export type FullSellerReplyOrchestrationResult = {
   orchestrator_pipeline_debug: Record<string, unknown>;
 };
 
-const REPLY_TS = join("src", "lib", "agents", "business-context", "reply.ts");
-
-function hasReplyTs(dir: string): boolean {
-  return existsSync(join(dir, REPLY_TS));
-}
-
-function resolveMonorepoRoot(): string {
-  const fromEnv = process.env.OPTIMA_MONOREPO_ROOT?.trim();
-  if (fromEnv) {
-    const abs = resolve(fromEnv);
-    if (hasReplyTs(abs)) return abs;
-    throw new Error(`[OPTIMA_RAILWAY_ORCHESTRATOR] OPTIMA_MONOREPO_ROOT invalid: ${abs}`);
-  }
-
-  const cwd = process.cwd();
-  const parent = resolve(cwd, "..");
-
-  // Railway root dir is usually optima-ai-backend — seller brain lives in repo parent.
-  if (hasReplyTs(parent)) return parent;
-  if (hasReplyTs(cwd)) return cwd;
-
-  throw new Error(
-    "[OPTIMA_RAILWAY_ORCHESTRATOR] Cannot find src/lib/agents/business-context/reply.ts — set Railway Root Directory to repo root OR env OPTIMA_MONOREPO_ROOT=..",
-  );
-}
-
-function moduleUrl(root: string, relativePath: string): string {
-  return pathToFileURL(join(root, relativePath)).href;
-}
-
 export async function runFullSellerReplyOrchestration(
   input: FullSellerReplyOrchestrationInput,
 ): Promise<FullSellerReplyOrchestrationResult> {
-  const root = resolveMonorepoRoot();
-  console.log("[OPTIMA_RAILWAY_ORCHESTRATOR] monorepo_root", { root });
-
   const locked = await acquireReplyLock(input.session_id, input.request_id);
   if (!locked) {
     throw new Error("DUPLICATE_REPLY_REQUEST");
@@ -112,24 +79,6 @@ export async function runFullSellerReplyOrchestration(
       });
       timingScheduled.push("typing_delay");
     }
-
-    console.log("[OPTIMA_REPLY_PIPELINE] dynamic_import_start", { root });
-    const [{ generateAIReply }, { beginReplyTurn, isActiveReplyTurn }, { ConversationPipelineDebugger }, { jsonSafe }] =
-      await Promise.all([
-        import(moduleUrl(root, "src/lib/agents/business-context/reply.ts")) as Promise<{
-          generateAIReply: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-        }>,
-        import(moduleUrl(root, "src/lib/chat/pipeline/central-reply-manager.ts")) as Promise<{
-          beginReplyTurn: (sessionId: string, userMessage: string, requestId?: string) => Record<string, unknown>;
-          isActiveReplyTurn: (turn: unknown) => boolean;
-        }>,
-        import(moduleUrl(root, "src/lib/chat/pipeline/conversation-pipeline-debugger.ts")) as Promise<{
-          ConversationPipelineDebugger: new (traceId?: string) => { toSnapshot: () => Record<string, unknown> };
-        }>,
-        import(moduleUrl(root, "src/lib/chat/pipeline/json-safe.ts")) as Promise<{
-          jsonSafe: <T>(value: T, fallback: T) => T;
-        }>,
-      ]);
 
     const replyTurn = beginReplyTurn(input.session_id, input.message, input.request_id);
     const pipelineDebugger = new ConversationPipelineDebugger(input.pipeline_trace_id);

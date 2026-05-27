@@ -14,8 +14,6 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
   UPSTASH_REDIS_REST_URL: z.string().url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
-  /** Parent folder with `src/lib/agents/business-context/reply.ts` when cwd is optima-ai-backend */
-  OPTIMA_MONOREPO_ROOT: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

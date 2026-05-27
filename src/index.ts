@@ -6,6 +6,8 @@ import { chatRoutes } from "./routes/chat.js";
 
 async function main() {
   const env = loadEnv();
+  console.log("[OPTIMA_BACKEND] autonomous_mode=true");
+  console.log("[OPTIMA_BACKEND] monorepo_dependency=false");
 
   const app = Fastify({
     logger: {
