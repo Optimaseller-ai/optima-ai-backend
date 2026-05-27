@@ -30,7 +30,10 @@ import {
   detectDominantLanguage,
   type PremiumSellerProfile,
 } from "@/lib/agents/prompts/premium/seller-prompts";
-import type { SellerBehaviorConversationState } from "@/lib/agents/memory/conversation-state";
+import {
+  DEFAULT_CONVERSATION_PROFILE,
+  type SellerBehaviorConversationState,
+} from "@/lib/agents/memory/conversation-state";
 import { detectProspectTurnIntent, salesOpportunityAllowedForIntent } from "@/lib/agents/human-behavior/response-orchestrator";
 import { prospectExplicitlyRefusesOrder } from "@/lib/agents/human-behavior/emotions/conversation-emotion";
 import { runSalesOpportunityEngine } from "@/lib/agents/sales/opportunity-engine";
@@ -85,6 +88,13 @@ import {
   updateAiPressureScore,
 } from "@/lib/chat/pipeline/human-silence-engine";
 import { updateProspectBehaviorState } from "@/lib/agents/memory/prospect-behavior-memory";
+import {
+  adaptPersonalityEnergy,
+  adaptSalesStrategy,
+  applyCommercialAdaptationToHumanPlan,
+  runAdaptiveCommercialBehavior,
+  type CommercialAdaptationMemory,
+} from "@/lib/agents/commercial/adaptive-commercial-behavior-engine";
 import {
   formatRecoHintForPrompt,
   recommendFromCatalog,
@@ -310,6 +320,35 @@ export async function generateAIReply(args: {
     curiosity01: behaviorUpdate.emotional_flow.curiosity01,
     impatience01: behaviorUpdate.emotional_flow.impatience01,
     highTrustMode: behaviorUpdate.emotional_flow.highTrustMode,
+  });
+
+  const prospectTurnIntentEarly = detectProspectTurnIntent(message);
+  const commercialAdaptRun = runAdaptiveCommercialBehavior({
+    message,
+    history,
+    conversationState: args.conversationState,
+    turnIntent: prospectTurnIntentEarly,
+    lang: args.conversationState?.language === "en" ? "en" : args.conversationState?.language === "es" ? "es" : "fr",
+  });
+  args.conversationState = {
+    ...(args.conversationState ?? {}),
+    commercial_adaptation: commercialAdaptRun.adaptation,
+    conversationProfile: {
+      ...(args.conversationState?.conversationProfile ?? DEFAULT_CONVERSATION_PROFILE),
+      ...commercialAdaptRun.conversationProfilePatch,
+    },
+  } as any;
+  console.log("[COMMERCIAL_ADAPTATION]", {
+    request_id: args.replyTurn?.request_id,
+    dominantProfile: commercialAdaptRun.adaptation.dominantProfile,
+    secondaryProfile: commercialAdaptRun.adaptation.secondaryProfile,
+    conversationFatigue01: commercialAdaptRun.adaptation.conversationFatigue01,
+    responseLengthTarget: commercialAdaptRun.adaptation.responseLengthTarget,
+    commercialLevel01: commercialAdaptRun.adaptation.commercialLevel01,
+    commercialAction: commercialAdaptRun.adaptation.commercialAction,
+    persuasionStyle: commercialAdaptRun.adaptation.persuasionStyle,
+    allowProductRecommend: commercialAdaptRun.adaptation.allowProductRecommend,
+    noFollowUp: commercialAdaptRun.adaptation.noFollowUp,
   });
 
   let profileBusinessName: string;
@@ -607,8 +646,19 @@ export async function generateAIReply(args: {
         })
       : null;
 
+  const commercialAdaptEarly = (args.conversationState as any)?.commercial_adaptation as
+    | CommercialAdaptationMemory
+    | undefined;
+
   // Priority: minimal replies + no follow-up for weak engagement messages.
-  if (!forceMainPipeline && weakSignal.weak && args.followupAfterHold !== true) {
+  const forceMinimalCommercial =
+    commercialAdaptEarly?.commercialAction === "minimal_reply" ||
+    commercialAdaptEarly?.responseLengthTarget === "mini";
+  if (
+    !forceMainPipeline &&
+    args.followupAfterHold !== true &&
+    (weakSignal.weak || (forceMinimalCommercial && message.trim().length <= 28))
+  ) {
     const minimal = pickMinimalHumanReply({
       userMessage: message,
       allowEmoji,
@@ -1007,29 +1057,34 @@ export async function generateAIReply(args: {
     conversationProfile: args.conversationState?.conversationProfile,
   });
 
-  // Intelligent catalog recommender (real admin catalog) — 1–3 picks, in-stock first, no robotic lists.
-  const reco = recommendFromCatalog({
-    message,
-    history,
-    products: businessKnowledge.matchedProducts ?? catalogBrief,
-    productMemory: args.conversationState?.productMemory,
-    maxPicks: 3,
-    businessPriority: {
-      preferSponsored: true,
-      preferBestSellers: true,
-      preferHighMargin: false,
-    },
-  });
-  if (reco.memoryNext) {
-    (args.conversationState as any) = { ...(args.conversationState as any), productMemory: reco.memoryNext };
+  const commercialAdaptForReco = (args.conversationState as any)?.commercial_adaptation as CommercialAdaptationMemory | undefined;
+  let recoPrompt = "";
+  if (commercialAdaptForReco?.allowProductRecommend !== false && !socialTeasing.active) {
+    const reco = recommendFromCatalog({
+      message,
+      history,
+      products: businessKnowledge.matchedProducts ?? catalogBrief,
+      productMemory: args.conversationState?.productMemory,
+      maxPicks: commercialAdaptForReco?.allowCrossSell ? 3 : 2,
+      businessPriority: {
+        preferSponsored: true,
+        preferBestSellers: true,
+        preferHighMargin: commercialAdaptForReco?.persuasionStyle === "balanced",
+      },
+    });
+    if (reco.memoryNext) {
+      (args.conversationState as any) = { ...(args.conversationState as any), productMemory: reco.memoryNext };
+    }
+    recoPrompt = formatRecoHintForPrompt({ picks: reco.picks, lang: langForBrain });
+    console.log("[CATALOG_RECO]", {
+      request_id: args.replyTurn?.request_id,
+      picks: reco.picks.map((p) => ({ name: p.product.name, score: p.score, reasons: p.reasons })),
+      budgetMaxFcfa: reco.need.budgetMaxFcfa,
+      brandHint: reco.need.brandHint,
+    });
+  } else {
+    console.log("[CATALOG_RECO]", { request_id: args.replyTurn?.request_id, skipped: true, reason: "commercial_adaptation" });
   }
-  const recoPrompt = formatRecoHintForPrompt({ picks: reco.picks, lang: langForBrain });
-  console.log("[CATALOG_RECO]", {
-    request_id: args.replyTurn?.request_id,
-    picks: reco.picks.map((p) => ({ name: p.product.name, score: p.score, reasons: p.reasons })),
-    budgetMaxFcfa: reco.need.budgetMaxFcfa,
-    brandHint: reco.need.brandHint,
-  });
 
   const productsTextMinimal = [formatRetrievalProductsForPrompt(businessKnowledge, langForBrain), recoPrompt]
     .filter(Boolean)
@@ -1037,12 +1092,17 @@ export async function generateAIReply(args: {
   const chunksTextMinimal = (businessKnowledge.documentChunksText || "").slice(0, PROMPT_BUDGET.MAX_BLOCK_CHARS);
 
   let salesOpportunityBlock: string | undefined;
-  const suppressCommercial = socialLayer?.suppressCommercial === true;
+  const commercialAdapt = (args.conversationState as any)?.commercial_adaptation as CommercialAdaptationMemory | undefined;
+  const suppressCommercial =
+    socialLayer?.suppressCommercial === true ||
+    commercialAdapt?.commercialAction === "stop_selling" ||
+    commercialAdapt?.allowProductRecommend === false;
   if (
     !suppressCommercial &&
     !args.followupAfterHold &&
     salesOpportunityAllowedForIntent(prospectTurnIntent) &&
-    !prospectExplicitlyRefusesOrder(message)
+    !prospectExplicitlyRefusesOrder(message) &&
+    (commercialAdapt?.commercialLevel01 ?? 0.35) >= 0.28
   ) {
     const salesOpp = runSalesOpportunityEngine({
       message,
@@ -1096,18 +1156,21 @@ export async function generateAIReply(args: {
     requiresEmpathy: (emotionProfile as any)?.requires_empathy === true,
   };
 
-  const salesStage = {
+  let salesStage = {
     style: "balanced" as const,
     objective: socialTeasing.active
       ? ("answer" as const)
-      : prospectTurnIntent === "purchase_ready"
+      : prospectTurnIntent === "achat"
         ? ("close" as const)
         : emotionStage.requiresEmpathy
           ? ("defuse" as const)
           : ("answer" as const),
-    urgency: socialTeasing.active ? ("low" as const) : prospectTurnIntent === "purchase_ready" ? ("high" as const) : ("medium" as const),
-    objectionHandling: socialTeasing.active ? false : prospectTurnIntent === "objection" || prospectTurnIntent === "price",
+    urgency: socialTeasing.active ? ("low" as const) : prospectTurnIntent === "achat" ? ("high" as const) : ("medium" as const),
+    objectionHandling: socialTeasing.active ? false : prospectTurnIntent === "objection",
   };
+  if (commercialAdapt) {
+    salesStage = adaptSalesStrategy(salesStage, commercialAdapt);
+  }
   console.log("[TRACE]", "sales_strategy_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[TRACE]", "personality_engine_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
@@ -1117,16 +1180,18 @@ export async function generateAIReply(args: {
     turnCount,
     localHour: new Date().getHours(),
     emotionLabel: emotionStage.emotionLabel,
-    purchaseIntent: !socialTeasing.active && prospectTurnIntent === "purchase_ready",
+    purchaseIntent: !socialTeasing.active && (prospectTurnIntent === "achat" || prospectTurnIntent === "demande_produit"),
   });
 
+  const adaptedEnergy = commercialAdapt ? adaptPersonalityEnergy(energyPick.energy, commercialAdapt) : energyPick.energy;
   const personalityStage = {
-    energy: energyPick.energy,
+    energy: adaptedEnergy,
     voice: "human_whatsapp_fr" as const,
     constraints: [
       "Ne pas sonner comme une IA.",
       "Réponse WhatsApp: courte, naturelle, pas FAQ.",
-      energyPick.energy === "busy" ? "Occasionnellement: \"attends je regarde\"." : "",
+      adaptedEnergy === "busy" ? "Occasionnellement: \"attends je regarde\"." : "",
+      commercialAdapt?.toneHint ? `Ton adapté: ${commercialAdapt.toneHint}.` : "",
     ].filter(Boolean),
   };
   console.log("[TRACE]", "personality_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
@@ -1159,6 +1224,10 @@ export async function generateAIReply(args: {
   }
   if (pb?.humor01 >= 0.5) {
     humanPlan.preGenerationDirectives.push("Prospect humour: tu peux répondre léger (0-1 emoji max).");
+  }
+  if (commercialAdapt) {
+    applyCommercialAdaptationToHumanPlan(humanPlan, commercialAdapt);
+    humanPlan.preGenerationDirectives.push(...commercialAdaptRun.directives.slice(0, 6));
   }
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 

@@ -98,6 +98,7 @@ export type SellerBehaviorConversationState = {
   ai_pressure_score?: number;
   prospect_behavior?: import("./prospect-behavior-memory").ProspectBehaviorMemory;
   emotional_flow?: import("./prospect-behavior-memory").EmotionalFlowMemory;
+  commercial_adaptation?: import("../commercial/adaptive-commercial-behavior-engine").CommercialAdaptationMemory;
   tone_mode?: "chill" | "premium" | "vendeur_soft" | "support_client" | "conversation_naturelle";
   stats?: { turn_count?: number; fatigue?: number; last_active_at?: number };
   conversationalEtiquette?: ConversationalEtiquette;
