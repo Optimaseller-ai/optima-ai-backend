@@ -86,6 +86,10 @@ import {
 } from "@/lib/chat/pipeline/human-silence-engine";
 import { updateProspectBehaviorState } from "@/lib/agents/memory/prospect-behavior-memory";
 import {
+  formatRecoHintForPrompt,
+  recommendFromCatalog,
+} from "@/lib/agents/recommendation/catalog-recommender";
+import {
   PROMPT_BUDGET,
   compressChatHistory,
   prepareOpenRouterPayload,
@@ -1003,7 +1007,33 @@ export async function generateAIReply(args: {
     conversationProfile: args.conversationState?.conversationProfile,
   });
 
-  const productsTextMinimal = formatRetrievalProductsForPrompt(businessKnowledge, langForBrain);
+  // Intelligent catalog recommender (real admin catalog) — 1–3 picks, in-stock first, no robotic lists.
+  const reco = recommendFromCatalog({
+    message,
+    history,
+    products: businessKnowledge.matchedProducts ?? catalogBrief,
+    productMemory: args.conversationState?.productMemory,
+    maxPicks: 3,
+    businessPriority: {
+      preferSponsored: true,
+      preferBestSellers: true,
+      preferHighMargin: false,
+    },
+  });
+  if (reco.memoryNext) {
+    (args.conversationState as any) = { ...(args.conversationState as any), productMemory: reco.memoryNext };
+  }
+  const recoPrompt = formatRecoHintForPrompt({ picks: reco.picks, lang: langForBrain });
+  console.log("[CATALOG_RECO]", {
+    request_id: args.replyTurn?.request_id,
+    picks: reco.picks.map((p) => ({ name: p.product.name, score: p.score, reasons: p.reasons })),
+    budgetMaxFcfa: reco.need.budgetMaxFcfa,
+    brandHint: reco.need.brandHint,
+  });
+
+  const productsTextMinimal = [formatRetrievalProductsForPrompt(businessKnowledge, langForBrain), recoPrompt]
+    .filter(Boolean)
+    .join("\n\n");
   const chunksTextMinimal = (businessKnowledge.documentChunksText || "").slice(0, PROMPT_BUDGET.MAX_BLOCK_CHARS);
 
   let salesOpportunityBlock: string | undefined;
