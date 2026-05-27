@@ -50,6 +50,7 @@ export type FullSellerReplyOrchestrationResult = {
 export async function runFullSellerReplyOrchestration(
   input: FullSellerReplyOrchestrationInput,
 ): Promise<FullSellerReplyOrchestrationResult> {
+  const t0 = Date.now();
   const locked = await acquireReplyLock(input.session_id, input.request_id);
   if (!locked) {
     throw new Error("DUPLICATE_REPLY_REQUEST");
@@ -58,6 +59,12 @@ export async function runFullSellerReplyOrchestration(
   const timingScheduled: TimingJobKind[] = [];
 
   try {
+    console.log("[TRACE]", "generateAIReply_start", {
+      ms: Date.now() - t0,
+      session_id: input.session_id,
+      request_id: input.request_id,
+      messageLen: input.message.length,
+    });
     await setTypingState(input.session_id, { active: true, requestId: input.request_id });
 
     if (input.timing?.read) {
@@ -98,24 +105,39 @@ export async function runFullSellerReplyOrchestration(
       messageLen: input.message.length,
     });
 
-    const gen = (await generateAIReply({
-      message: input.message,
-      userId: input.user_id,
-      agentName: input.agent_name,
-      agentPersonality: input.agent_personality,
-      salesStyle: input.sales_style,
-      businessName: input.business_name,
-      conversationState: input.conversation_state,
-      history: input.history,
-      agentRole: input.agent_role,
-      agentTone: input.agent_tone,
-      personaKey: input.persona_key ?? null,
-      followupAfterHold: input.followup_after_hold,
-      sessionId: input.session_id_for_reply ?? input.session_id,
-      agentId: input.agent_id,
-      pipelineDebugger,
-      replyTurn,
-    })) as Record<string, unknown>;
+    const mainPipeline = (async () => {
+      return (await generateAIReply({
+        message: input.message,
+        userId: input.user_id,
+        agentName: input.agent_name,
+        agentPersonality: input.agent_personality,
+        salesStyle: input.sales_style,
+        businessName: input.business_name,
+        conversationState: input.conversation_state,
+        history: input.history,
+        agentRole: input.agent_role,
+        agentTone: input.agent_tone,
+        personaKey: input.persona_key ?? null,
+        followupAfterHold: input.followup_after_hold,
+        sessionId: input.session_id_for_reply ?? input.session_id,
+        agentId: input.agent_id,
+        pipelineDebugger,
+        replyTurn,
+      })) as Record<string, unknown>;
+    })();
+
+    const timeout = new Promise<never>((_, reject) => {
+      const ms = 30_000;
+      setTimeout(() => reject(new Error(`PIPELINE_TIMEOUT_${ms}MS`)), ms).unref?.();
+    });
+
+    const gen = await Promise.race([mainPipeline, timeout]);
+    console.log("[TRACE]", "generateAIReply_end", {
+      ms: Date.now() - t0,
+      session_id: input.session_id,
+      request_id: input.request_id,
+      replyLen: typeof (gen as any)?.reply === "string" ? (gen as any).reply.length : 0,
+    });
 
     if (!isActiveReplyTurn(replyTurn)) {
       console.warn("[OPTIMA_RAILWAY_ORCHESTRATOR] stale_reply_turn", {

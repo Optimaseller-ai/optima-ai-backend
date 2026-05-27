@@ -157,13 +157,26 @@ async function openRouterChatWithOneRetry(
       },
     });
   try {
+    console.log("[TRACE]", "openrouter_request_start", {
+      model: payload.model,
+      promptTokens: payload.finalPromptTokens,
+      maxTokens: payload.maxTokensOverride ?? payload.maxTokens,
+    });
     return await call();
   } catch (e1) {
     console.error("[OPTIMA_AI_ERROR]", e1);
     const msg = e1 instanceof Error ? e1.message : String(e1);
     if (/Missing OPENROUTER_API_KEY/i.test(msg)) throw e1;
+    console.log("[TRACE]", "retry_start", { reason: msg });
     await delay(2000);
-    return await call();
+    try {
+      const out = await call();
+      console.log("[TRACE]", "retry_end", { ok: true });
+      return out;
+    } catch (e2) {
+      console.error("[TRACE]", "retry_end", { ok: false, error: e2 instanceof Error ? e2.message : String(e2) });
+      throw e2;
+    }
   }
 }
 
@@ -202,6 +215,11 @@ export async function generateAIReply(args: {
 }): Promise<GenerateAIReplyResult> {
   const dbg = args.pipelineDebugger;
   const pipelineStart = Date.now();
+  console.log("[TRACE]", "generateAIReply_start", {
+    ms: 0,
+    session_id: args.sessionId,
+    request_id: args.replyTurn?.request_id,
+  });
   logCtx("generate_start", {
     userId: args.userId,
     messageLen: args.message.length,
@@ -302,6 +320,11 @@ export async function generateAIReply(args: {
   const emotionProfile = classifyConversationEmotion({
     message,
     previous: args.conversationState?.emotionalContinuity,
+  });
+  console.log("[TRACE]", "emotion_analysis_end", {
+    ms: Date.now() - pipelineStart,
+    request_id: args.replyTurn?.request_id,
+    emotion: (emotionProfile as any)?.dominant_emotion ?? (emotionProfile as any)?.label ?? "unknown",
   });
 
   const turnCount = args.conversationState?.stats?.turn_count ?? 0;
@@ -904,8 +927,12 @@ export async function generateAIReply(args: {
     const langHint = args.conversationState?.language === "en" ? "en" : args.conversationState?.language === "es" ? "es" : "fr";
     const mem = sanitizeLearningMemoryForUse(await loadLearningMemoryFromDb(userId));
     learningBlock = formatLearningPromptBlock(mem, langHint === "es" ? "fr" : langHint);
-  } catch {
-    learningBlock = null;
+  } catch (e) {
+    console.error("[TRACE]", "learning_memory_error", {
+      request_id: args.replyTurn?.request_id,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    throw e;
   }
 
   const blocksTruncated = truncateContextBlocks({
@@ -916,6 +943,7 @@ export async function generateAIReply(args: {
   });
 
   // -------------------- NEW PIPELINE STAGES (pre-LLM) --------------------
+  console.log("[TRACE]", "sales_strategy_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const emotionStage = {
     language: langForBrain,
     emotionLabel: String((emotionProfile as any)?.dominant_emotion ?? (emotionProfile as any)?.label ?? "neutral"),
@@ -934,7 +962,9 @@ export async function generateAIReply(args: {
     urgency: prospectTurnIntent === "purchase_ready" ? ("high" as const) : ("medium" as const),
     objectionHandling: prospectTurnIntent === "objection" || prospectTurnIntent === "price",
   };
+  console.log("[TRACE]", "sales_strategy_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
+  console.log("[TRACE]", "personality_engine_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const energyPick = inferDynamicEnergy({
     lang: langForBrain,
     message,
@@ -953,8 +983,10 @@ export async function generateAIReply(args: {
       energyPick.energy === "busy" ? "Occasionnellement: \"attends je regarde\"." : "",
     ].filter(Boolean),
   };
+  console.log("[TRACE]", "personality_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   const microSeed = `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|${turnCount}`;
+  console.log("[TRACE]", "human_behavior_engine_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const humanPlan = buildHumanBehaviorPlan({
     lang: langForBrain,
     message,
@@ -964,6 +996,7 @@ export async function generateAIReply(args: {
     sales: salesStage,
     personality: personalityStage,
   });
+  console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[QUESTION_PROBABILITY]", {
     request_id: args.replyTurn?.request_id,
@@ -1007,6 +1040,7 @@ export async function generateAIReply(args: {
     dropped: memFacts.dropped,
   });
 
+  console.log("[TRACE]", "dynamic_prompt_builder_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const promptBundle = buildDynamicPromptBundle({
     agentName: sellerProfile.agentName,
     businessName: sellerProfile.businessName,
@@ -1020,6 +1054,12 @@ export async function generateAIReply(args: {
     personality: personalityStage,
     human: humanPlan,
     attempt: 1,
+  });
+  console.log("[TRACE]", "dynamic_prompt_builder_end", {
+    ms: Date.now() - pipelineStart,
+    request_id: args.replyTurn?.request_id,
+    totalChars: promptBundle.totalChars,
+    modules: promptBundle.includedModules,
   });
 
   const systemPrompt = promptBundle.systemPrompt;
@@ -1080,12 +1120,21 @@ export async function generateAIReply(args: {
       }),
     run: async () => {
       const orStart = Date.now();
+      console.log("[TRACE]", "openrouter_request_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
       let attempt = 1;
       let raw = await openRouterChatWithOneRetry(openRouterPayloadWithModel);
+      console.log("[TRACE]", "openrouter_request_end", {
+        ms: Date.now() - pipelineStart,
+        request_id: args.replyTurn?.request_id,
+        rawLen: raw.length,
+      });
 
+      console.log("[TRACE]", "validator_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt });
       let decision = validateHumanReplyLength(raw);
+      console.log("[TRACE]", "validator_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt, ok: decision.ok });
       console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
       if (!decision.ok) {
+        console.log("[TRACE]", "retry_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt: 2 });
         attempt = 2;
         const rebundle = buildDynamicPromptBundle({
           agentName: sellerProfile.agentName,
@@ -1109,6 +1158,7 @@ export async function generateAIReply(args: {
           maxTokensOverride: 180,
         });
         raw = await openRouterChatWithOneRetry(retryWithModel);
+        console.log("[TRACE]", "retry_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, rawLen: raw.length });
         decision = validateHumanReplyLength(raw);
         console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
       }
@@ -1142,7 +1192,9 @@ export async function generateAIReply(args: {
 
   cleaned = stripFakeVerificationPhrases(cleaned, langForBrain, false);
 
+  console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const deliveryPlan = buildHumanDeliveryPlan({ replyText: cleaned });
+  console.log("[TRACE]", "delivery_simulation_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, ...deliveryPlan });
   console.log("[DELIVERY_SIMULATION]", { request_id: args.replyTurn?.request_id, ...deliveryPlan });
 
   const emotionalRun = safeEngineExecuteSync({

@@ -32,6 +32,7 @@ const EmbedBodySchema = z.object({
 export async function chatRoutes(app: FastifyInstance) {
   /** Full seller reply — `generateAIReply` + Redis locks + human timing jobs. */
   app.post("/v1/chat/reply", async (req, reply) => {
+    const t0 = Date.now();
     if (!verifyBackendAuth(req)) {
       return reply.status(401).send({ error: "unauthorized" });
     }
@@ -66,6 +67,12 @@ export async function chatRoutes(app: FastifyInstance) {
     const body = parsed.data;
 
     try {
+      console.log("[TRACE]", "reception_message", {
+        ms: Date.now() - t0,
+        session_id: body.session_id,
+        request_id: body.request_id,
+        messageLen: body.message.length,
+      });
       req.log.info({ path: "/v1/chat/reply" }, "[OPTIMA_RAILWAY_ORCHESTRATOR] incoming_full_reply");
       const result = await runFullSellerReplyOrchestration({
         session_id: body.session_id,
@@ -87,7 +94,12 @@ export async function chatRoutes(app: FastifyInstance) {
         timing: body.timing,
       });
 
-      return reply.send({
+      console.log("[TRACE]", "whatsapp_send_start", {
+        ms: Date.now() - t0,
+        session_id: body.session_id,
+        request_id: body.request_id,
+      });
+      const resp = {
         ok: true,
         reply: result.reply,
         source: result.source,
@@ -95,8 +107,29 @@ export async function chatRoutes(app: FastifyInstance) {
         timing_scheduled: result.timing_scheduled,
         payload: result.payload,
         orchestrator_pipeline_debug: result.orchestrator_pipeline_debug,
+      };
+      console.log("[TRACE]", "whatsapp_send_end", {
+        ms: Date.now() - t0,
+        session_id: body.session_id,
+        request_id: body.request_id,
+        replyLen: result.reply.length,
       });
+      console.log("[TRACE]", "whatsapp_send_success", {
+        ms: Date.now() - t0,
+        session_id: body.session_id,
+        request_id: body.request_id,
+      });
+      console.log("[TRACE]", "final_pipeline_complete", {
+        ms: Date.now() - t0,
+        session_id: body.session_id,
+        request_id: body.request_id,
+      });
+      return reply.send(resp);
     } catch (e) {
+      console.error("[TRACE]", "pipeline_error", {
+        ms: Date.now() - t0,
+        error: e instanceof Error ? e.message : String(e),
+      });
       const msg = e instanceof Error ? e.message : String(e);
       const code =
         e && typeof e === "object" && "code" in e && typeof (e as { code?: unknown }).code === "string"
