@@ -149,11 +149,14 @@ export async function runFullSellerReplyOrchestration(
 
     const sanitizedConversationState = sanitizeConversationStateForLlm(hydratedState as any);
     const sanitizedHistory = sanitizeHistoryForLlm(mergedHistory);
-    if (sanitizedHistory.dropped > 0) {
+    if (sanitizedHistory.dropped > 0 || !sanitizedHistory.validation.ok) {
       console.log("[OPTIMA_MEMORY_STATE] history_sanitized", {
         request_id: input.request_id,
         dropped: sanitizedHistory.dropped,
         kept: sanitizedHistory.history.length,
+        history_quality_score: sanitizedHistory.history_quality_score,
+        validation_ok: sanitizedHistory.validation.ok,
+        validation_reasons: sanitizedHistory.validation.reasons,
       });
     }
 

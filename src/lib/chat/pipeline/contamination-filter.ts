@@ -31,23 +31,132 @@ export function hasContaminationPhrase(text: string): boolean {
 
 export function sanitizeHistoryForLlm(
   history: Array<{ role: "user" | "assistant"; content: string }>,
+): {
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  dropped: number;
+  history_quality_score: number;
+  validation: { ok: boolean; reasons: string[] };
+} {
+  const list = Array.isArray(history) ? history : [];
+  const beforeCount = list.length;
+  const sanitized = sanitizeConversationHistory(list);
+  const validation = validateHistoryForLLM(sanitized.history);
+  const quality = computeHistoryQualityScore(sanitized.history);
+  console.log("[HISTORY_SANITIZED]", {
+    before_count: beforeCount,
+    after_count: sanitized.history.length,
+    dropped: sanitized.dropped,
+    history_quality_score: quality,
+  });
+  return {
+    history: sanitized.history,
+    dropped: sanitized.dropped,
+    history_quality_score: quality,
+    validation,
+  };
+}
+
+function normalizeHistoryContent(s: string): string {
+  return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isTooShortNoise(content: string): boolean {
+  const n = normalizeHistoryContent(content);
+  if (!n) return true;
+  if (n.length < 2) return true;
+  if (/^(ok|oui|non|hm+|hmm+|euh|ah|yo)$/.test(n)) return true;
+  return false;
+}
+
+export function sanitizeConversationHistory(
+  history: Array<{ role: "user" | "assistant"; content: string }>,
 ): { history: Array<{ role: "user" | "assistant"; content: string }>; dropped: number } {
   const list = Array.isArray(history) ? history : [];
   const clean: Array<{ role: "user" | "assistant"; content: string }> = [];
   let dropped = 0;
+
   for (const turn of list) {
-    const content = String(turn?.content ?? "").trim();
-    if (!content) {
+    const role = turn?.role === "assistant" ? "assistant" : "user";
+    const content = String(turn?.content ?? "").trim().replace(/\s+/g, " ");
+    const norm = normalizeHistoryContent(content);
+
+    if (!norm || isTooShortNoise(content) || hasContaminationPhrase(content)) {
       dropped += 1;
       continue;
     }
-    if (hasContaminationPhrase(content)) {
+
+    // Block exact consecutive duplicates by same role.
+    const last = clean[clean.length - 1];
+    if (last && last.role === role && normalizeHistoryContent(last.content) === norm) {
       dropped += 1;
+      console.log("[HISTORY_DUPLICATE_BLOCKED]", { role, content: norm.slice(0, 80) });
       continue;
     }
-    clean.push({ role: turn.role, content });
+
+    // Limit repetitions: same normalized message >2 times in last 10 turns.
+    const recent = clean.slice(-10);
+    const repeatCount = recent.filter((t) => normalizeHistoryContent(t.content) === norm).length;
+    if (repeatCount >= 2) {
+      dropped += 1;
+      console.log("[HISTORY_REPEAT_LIMIT_BLOCKED]", { role, content: norm.slice(0, 80), repeatCount: repeatCount + 1 });
+      continue;
+    }
+
+    // Force alternance: never push same role in a row; replace last with newest.
+    if (last && last.role === role) {
+      clean[clean.length - 1] = { role, content };
+      console.log("[HISTORY_ALTERNANCE_REPAIRED]", { role, mode: "replace_last" });
+      continue;
+    }
+
+    clean.push({ role, content });
   }
-  return { history: clean, dropped };
+
+  // Keep recent bounded history for LLM.
+  const bounded = clean.slice(-24);
+  dropped += clean.length - bounded.length;
+  return { history: bounded, dropped };
+}
+
+export function validateHistoryForLLM(
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+): { ok: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const list = Array.isArray(history) ? history : [];
+  if (!list.length) reasons.push("empty_history");
+
+  for (let i = 0; i < list.length; i++) {
+    const cur = list[i]!;
+    const content = String(cur.content ?? "").trim();
+    if (!content) reasons.push(`empty_content_at_${i}`);
+    if (content.length > 900) reasons.push(`too_long_content_at_${i}`);
+    if (i > 0 && list[i - 1]!.role === cur.role) reasons.push(`alternance_broken_at_${i}`);
+  }
+
+  const normalized = list.map((t) => normalizeHistoryContent(t.content));
+  const unique = new Set(normalized);
+  const repeatedRatio = list.length ? 1 - unique.size / list.length : 0;
+  if (repeatedRatio > 0.45) reasons.push("repeated_ratio_too_high");
+
+  return { ok: reasons.length === 0, reasons };
+}
+
+function computeHistoryQualityScore(history: Array<{ role: "user" | "assistant"; content: string }>): number {
+  const list = Array.isArray(history) ? history : [];
+  if (!list.length) return 0;
+
+  let alternanceBreaks = 0;
+  for (let i = 1; i < list.length; i++) {
+    if (list[i]!.role === list[i - 1]!.role) alternanceBreaks += 1;
+  }
+  const alternanceScore = Math.max(0, 1 - alternanceBreaks / Math.max(1, list.length - 1));
+  const normalized = list.map((t) => normalizeHistoryContent(t.content));
+  const diversityScore = new Set(normalized).size / Math.max(1, list.length);
+  const avgLen = normalized.reduce((a, b) => a + b.length, 0) / Math.max(1, normalized.length);
+  const coherenceScore = Math.min(1, avgLen / 40);
+  const repetitionPenalty = Math.max(0, 1 - (1 - diversityScore));
+  const score = 0.4 * alternanceScore + 0.25 * diversityScore + 0.2 * coherenceScore + 0.15 * repetitionPenalty;
+  return Number(score.toFixed(3));
 }
 
 function deepCleanUnknown(value: unknown): unknown {
