@@ -1971,6 +1971,8 @@ export type PostProcessPremiumReplyOpts = {
 
 const COMPLAINT_OR_BREAKDOWN_RE =
   /\b(plainte|probleme|probl[eè]me|de[çc]u|frustr|marche\s+pas|panne|bug|pas\s+content|d[ée]ception|retour|sav)\b/i;
+const SOCIAL_RESET_RE = /\b(salut|bonjour|bonsoir|comment\s+allez[- ]vous|je\s+peux\s+vous\s+aider)\b/i;
+const FRUSTRATION_RE = /\b(frustr|de[çc]u|plainte|probleme|probl[eè]me|panne|marche\s+pas|pas\s+content)\b/i;
 
 function isSavPriorityMode(opts?: PostProcessPremiumReplyOpts): boolean {
   const userMsg = String(opts?.lastUserMessage ?? "");
@@ -2001,6 +2003,40 @@ function applySavHumanMode(text: string, lang: "fr" | "en" | "es"): string {
   return out;
 }
 
+function scoreContextCoherence(args: {
+  userMessage: string;
+  reply: string;
+  emotionalFrustrated: boolean;
+  engagedConversation: boolean;
+}): number {
+  const user = String(args.userMessage ?? "").toLowerCase();
+  const reply = String(args.reply ?? "").toLowerCase().trim();
+  if (!reply) return 0;
+  let score = 0.2;
+  if (reply.length >= 18) score += 0.1;
+  if (/\b(v[ée]rifie|regarde|compris|d[eé]sol[ée]|dommage|bloque|souci|probl[eè]me)\b/i.test(reply)) score += 0.35;
+  if (/\b(prix|stock|mod[eè]le|livraison|commande|garantie)\b/i.test(user) && /\b(prix|stock|mod[eè]le|livraison|commande|garantie)\b/i.test(reply)) {
+    score += 0.25;
+  }
+  if (args.emotionalFrustrated && /\b(d[eé]sol[ée]|je vois|je comprends|dommage|on r[eè]gle)\b/i.test(reply)) {
+    score += 0.2;
+  }
+  if (args.engagedConversation && SOCIAL_RESET_RE.test(reply)) score -= 0.5;
+  return Math.max(0, Math.min(1, score));
+}
+
+function isSocialResetBlocked(args: {
+  text: string;
+  userMessage: string;
+  emotionalFrustrated: boolean;
+  engagedConversation: boolean;
+}): boolean {
+  if (!args.engagedConversation && !args.emotionalFrustrated) return false;
+  if (!SOCIAL_RESET_RE.test(args.text)) return false;
+  if (FRUSTRATION_RE.test(args.userMessage) || args.emotionalFrustrated) return true;
+  return args.engagedConversation;
+}
+
 /** Post-traitement réponse premium — chaîne tracée + garde anti-effondrement. */
 export function postProcessPremiumReply(reply: string, opts?: PostProcessPremiumReplyOpts) {
   const initial = String(reply ?? "").trim();
@@ -2011,7 +2047,12 @@ export function postProcessPremiumReply(reply: string, opts?: PostProcessPremium
 
   if (isSavPriorityMode(opts)) {
     console.log("[SAV_HUMAN_MODE]", { reason: "frustration_or_complaint", bypass: "sanitize_hold_commercial" });
-    return applySavHumanMode(initial, lang);
+    const sav = applySavHumanMode(initial, lang);
+    console.log("[FINAL_REPLY_DECISION]", {
+      final_reply_source: sav === initial ? "llm_original" : "sanitized_llm",
+      reply_replacement_reason: "sav_priority_mode",
+    });
+    return sav;
   }
 
   // Human reply protection: if already “human enough”, do not rewrite it.
@@ -2020,6 +2061,10 @@ export function postProcessPremiumReply(reply: string, opts?: PostProcessPremium
   if (verdict.ok) {
     console.log("[HUMAN_REPLY_PROTECTED]", { reason: "isHumanEnough" });
     console.log("[POST_PROCESS_SKIPPED]", { reason: "human_reply_protected" });
+    console.log("[FINAL_REPLY_DECISION]", {
+      final_reply_source: "llm_original",
+      reply_replacement_reason: "human_reply_protected",
+    });
     return initial;
   } else if (verdict.hits?.length) {
     console.log("[BLACKLIST_TRIGGER]", { context: "post_process_input", removed: verdict.hits });
@@ -2102,6 +2147,59 @@ export function postProcessPremiumReply(reply: string, opts?: PostProcessPremium
 
   const chain = runReplyTransformationChain({ initialText: initial, steps, fallbackInput });
   if (opts?.transformationLogs) opts.transformationLogs.push(...chain.logs);
+  const userMsg = String(opts?.lastUserMessage ?? "");
+  const emotionalFrustrated =
+    String((opts?.conversationState as any)?.emotionalContinuity?.state ?? "").toLowerCase() === "frustrated" ||
+    Number((opts?.conversationState as any)?.emotionalContinuity?.frustration_score ?? 0) > 0.45 ||
+    FRUSTRATION_RE.test(userMsg);
+  const engagedConversation =
+    Number(opts?.conversationState?.stats?.turn_count ?? 0) > 4 ||
+    (opts?.recentAssistantMessages?.length ?? 0) >= 2;
+
+  if (
+    isSocialResetBlocked({
+      text: chain.text,
+      userMessage: userMsg,
+      emotionalFrustrated,
+      engagedConversation,
+    })
+  ) {
+    console.log("[FINAL_REPLY_DECISION]", {
+      final_reply_source: "llm_original",
+      reply_replacement_reason: "blocked_social_reset",
+    });
+    return initial;
+  }
+
+  const llmScore = scoreContextCoherence({
+    userMessage: userMsg,
+    reply: initial,
+    emotionalFrustrated,
+    engagedConversation,
+  });
+  const transformedScore = scoreContextCoherence({
+    userMessage: userMsg,
+    reply: chain.text,
+    emotionalFrustrated,
+    engagedConversation,
+  });
+
+  if (llmScore > transformedScore) {
+    console.log("[FINAL_REPLY_DECISION]", {
+      final_reply_source: "llm_original",
+      reply_replacement_reason: "context_coherence_score",
+      llmScore,
+      fallbackScore: transformedScore,
+    });
+    return initial;
+  }
+
+  console.log("[FINAL_REPLY_DECISION]", {
+    final_reply_source: chain.restoredFromFallback ? "fallback_social" : "sanitized_llm",
+    reply_replacement_reason: chain.restoredFromFallback ? "emergency_fallback" : "post_process_chain",
+    llmScore,
+    fallbackScore: transformedScore,
+  });
   return chain.text;
 }
 
