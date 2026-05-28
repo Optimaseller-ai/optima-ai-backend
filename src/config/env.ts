@@ -12,6 +12,8 @@ const envSchema = z.object({
   OPENROUTER_APP_NAME: z.string().default("Optima Seller AI"),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  REDIS_URL: z.string().url().optional(),
+  REDIS_TOKEN: z.string().min(1).optional(),
   UPSTASH_REDIS_REST_URL: z.string().url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 });

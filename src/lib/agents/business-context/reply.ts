@@ -1,6 +1,7 @@
 import { createAdminClientSafe } from "@/lib/supabase/admin";
 import { openRouterChat, openRouterEmbed } from "@/lib/ai/openrouter";
 import { logOpenRouterProxyConfigOnce } from "@/lib/ai/openrouter-proxy-config";
+import { loadLlmCache, saveLlmCache } from "@/lib/redis/llm-response-cache";
 import { resolveBusinessTimezone } from "@/lib/agents/timing/business-timezone";
 import {
   searchBusinessKnowledge,
@@ -1519,6 +1520,17 @@ export async function generateAIReply(args: {
       }),
     run: async () => {
       const orStart = Date.now();
+      const cacheContextKey = `${businessIntentProbe.intent}|${args.userId}|${args.sessionId ?? ""}`;
+      const cached = await loadLlmCache({
+        model: modelChoice.model,
+        systemPrompt,
+        userPrompt,
+        message,
+        contextKey: cacheContextKey,
+      });
+      if (cached) {
+        return cached;
+      }
       console.log("[TRACE]", "openrouter_request_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
       let attempt = 1;
       let raw = await openRouterChatWithOneRetry(openRouterPayloadWithModel);
@@ -1693,7 +1705,17 @@ export async function generateAIReply(args: {
         console.log("[GROUNDING_VALIDATION]", { request_id: args.replyTurn?.request_id, ok: true });
       }
 
-      return grounding.cleanedReply || processed;
+      const finalOut = grounding.cleanedReply || processed;
+      await saveLlmCache({
+        model: modelChoice.model,
+        systemPrompt,
+        userPrompt,
+        message,
+        contextKey: cacheContextKey,
+        response: finalOut,
+        intent: businessIntentProbe.intent === "service_inquiry" ? "catalog" : socialTeasing.active ? "social" : "default",
+      });
+      return finalOut;
     },
   });
 

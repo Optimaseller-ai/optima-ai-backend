@@ -8,6 +8,17 @@ import { beginReplyTurn, isActiveReplyTurn } from "@/lib/chat/pipeline/central-r
 import { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversation-pipeline-debugger";
 import { jsonSafe } from "@/lib/chat/pipeline/json-safe";
 import {
+  buildHydratedState,
+  loadConversationSession,
+  saveConversationSession,
+} from "@/lib/redis/conversation-session-store";
+import { captureEmotionalPersistence, restoreEmotionalPersistence } from "@/lib/redis/emotion-persistence";
+import { captureRelationshipMemory, restoreRelationshipMemory } from "@/lib/redis/relationship-memory";
+import { captureFollowupMemory } from "@/lib/redis/followup-memory";
+import { filterImportantHistory, filterImportantMemoryLines } from "@/lib/redis/memory-importance-score";
+import { saveLiveConversationState } from "@/lib/redis/live-conversation-state";
+import { logStructured } from "@/lib/logging/structured-log";
+import {
   sanitizeConversationStateForLlm,
   sanitizeHistoryForLlm,
   sanitizeReplyTransformationChain,
@@ -110,8 +121,34 @@ export async function runFullSellerReplyOrchestration(
       messageLen: input.message.length,
     });
 
-    const sanitizedConversationState = sanitizeConversationStateForLlm(input.conversation_state);
-    const sanitizedHistory = sanitizeHistoryForLlm(Array.isArray(input.history) ? input.history : []);
+    const redisSession = await loadConversationSession(input.session_id);
+    let hydratedState = buildHydratedState({
+      incoming: (input.conversation_state ?? {}) as any,
+      fromRedis: redisSession,
+    });
+    if (redisSession?.emotionalState) {
+      hydratedState = restoreEmotionalPersistence(hydratedState, {
+        mood: (redisSession as any)?.mood,
+        frustration: (redisSession as any)?.frustration,
+        enthusiasm: (redisSession as any)?.enthusiasm,
+        trust: redisSession.trustScore,
+        fatigue: (redisSession as any)?.fatigue,
+        updatedAt: redisSession.updatedAt,
+      });
+    }
+    hydratedState = restoreRelationshipMemory(hydratedState, (redisSession as any)?.relationshipMemory);
+    hydratedState.memory = filterImportantMemoryLines(hydratedState.memory ?? [], 14);
+    const mergedHistory = filterImportantHistory([...(redisSession?.compactHistory ?? []), ...(Array.isArray(input.history) ? input.history : [])], 16);
+    logStructured("[SESSION_HYDRATED]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      redisFound: Boolean(redisSession),
+      history: mergedHistory.length,
+      memory: hydratedState.memory?.length ?? 0,
+    });
+
+    const sanitizedConversationState = sanitizeConversationStateForLlm(hydratedState as any);
+    const sanitizedHistory = sanitizeHistoryForLlm(mergedHistory);
     if (sanitizedHistory.dropped > 0) {
       console.log("[OPTIMA_MEMORY_STATE] history_sanitized", {
         request_id: input.request_id,
@@ -181,6 +218,39 @@ export async function runFullSellerReplyOrchestration(
       replyOwnership: gen.replyOwnership,
       liveOrchestrator: liveSafe,
     };
+    const conversationStateNext = (gen as any)?.conversationStateNext as Record<string, unknown> | undefined;
+    const finalState = (conversationStateNext ?? sanitizedConversationState) as any;
+    finalState.followupMemory = captureFollowupMemory(String(gen.reply ?? ""), finalState);
+    finalState.relationshipMemory = captureRelationshipMemory(finalState);
+    const emotionPersist = captureEmotionalPersistence(finalState);
+    if (emotionPersist) {
+      finalState.emotionPersistence = emotionPersist;
+    }
+    const compactHistory = filterImportantHistory(
+      [...mergedHistory, { role: "user", content: input.message }, { role: "assistant", content: String(gen.reply ?? "") }],
+      18,
+    );
+    await saveConversationSession({
+      sessionId: input.session_id,
+      state: finalState,
+      history: compactHistory,
+    });
+    await saveLiveConversationState(input.session_id, {
+      typingState: { active: false, requestId: input.request_id, updatedAt: Date.now() },
+      readState: { seen: true, lastReadAt: Date.now() },
+      emotionalState: finalState.prospectEmotionalState,
+      lastActivityAt: Date.now(),
+      humanizationTiming: {
+        totalMs: Number(orchestrator_pipeline_debug?.totalMs ?? 0),
+        responseMode: String(orchestrator_pipeline_debug?.responseMode ?? ""),
+      },
+    });
+    logStructured("[MEMORY_COMPRESSED]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      compactHistory: compactHistory.length,
+      memory: finalState.memory?.length ?? 0,
+    });
 
     if (input.timing?.followUp) {
       await scheduleTimingJob({
