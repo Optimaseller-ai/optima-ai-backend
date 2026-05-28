@@ -56,6 +56,13 @@ export function sanitizeHistoryForLlm(
   };
 }
 
+export function hasConsecutiveRoles(history: Array<{ role: "user" | "assistant"; content: string }>): boolean {
+  for (let i = 1; i < history.length; i++) {
+    if (history[i]!.role === history[i - 1]!.role) return true;
+  }
+  return false;
+}
+
 function normalizeHistoryContent(s: string): string {
   return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }

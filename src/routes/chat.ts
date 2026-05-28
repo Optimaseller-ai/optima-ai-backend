@@ -139,8 +139,14 @@ export async function chatRoutes(app: FastifyInstance) {
       if (msg === "DUPLICATE_REPLY_REQUEST") {
         return reply.status(409).send({ error: "duplicate_request" });
       }
+      if (msg === "DUPLICATE_MESSAGE_FINGERPRINT") {
+        return reply.status(409).send({ error: "duplicate_message_fingerprint" });
+      }
       if (msg === "STALE_REPLY_TURN") {
         return reply.status(409).send({ error: "stale_reply_turn" });
+      }
+      if (msg === "INVALID_HISTORY_STRUCTURE") {
+        return reply.status(422).send({ error: "invalid_history_structure" });
       }
       if (code === "REPLY_ENGINE_NOT_FOUND" || msg.includes("REPLY_ENGINE_NOT_FOUND")) {
         req.log.error(e);

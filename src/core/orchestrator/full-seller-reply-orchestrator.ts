@@ -1,6 +1,7 @@
 import type { OpenRouterMessage } from "./openrouter-client.js";
 import { openRouterChat } from "./openrouter-client.js";
-import { acquireReplyLock, releaseReplyLock } from "../../redis/anti-duplicate.js";
+import { createHash } from "crypto";
+import { acquireMessageFingerprint, acquireReplyLock, releaseReplyLock } from "../../redis/anti-duplicate.js";
 import { setTypingState, clearTypingState } from "../../redis/typing-state.js";
 import { scheduleTimingJob, type TimingJobKind } from "../../queue/timing-queue.js";
 import { generateAIReply } from "@/lib/agents/business-context/reply";
@@ -19,6 +20,7 @@ import { filterImportantHistory, filterImportantMemoryLines } from "@/lib/redis/
 import { saveLiveConversationState } from "@/lib/redis/live-conversation-state";
 import { logStructured } from "@/lib/logging/structured-log";
 import {
+  hasConsecutiveRoles,
   sanitizeConversationStateForLlm,
   sanitizeHistoryForLlm,
   sanitizeReplyTransformationChain,
@@ -67,6 +69,18 @@ export async function runFullSellerReplyOrchestration(
   input: FullSellerReplyOrchestrationInput,
 ): Promise<FullSellerReplyOrchestrationResult> {
   const t0 = Date.now();
+  const normalizedMessage = String(input.message ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const messageFingerprint = createHash("sha1").update(`user:${normalizedMessage}`).digest("hex");
+  console.log("[FRONT_SEND]", { session_id: input.session_id, message: input.message, timestamp: Date.now() });
+  console.log("[BACKEND_FINGERPRINT]", {
+    session_id: input.session_id,
+    fingerprint: `user:${messageFingerprint}`,
+    timestamp: Date.now(),
+  });
+  const uniqueMessage = await acquireMessageFingerprint(input.session_id, messageFingerprint);
+  if (!uniqueMessage) {
+    throw new Error("DUPLICATE_MESSAGE_FINGERPRINT");
+  }
   const locked = await acquireReplyLock(input.session_id, input.request_id);
   if (!locked) {
     throw new Error("DUPLICATE_REPLY_REQUEST");
@@ -148,7 +162,23 @@ export async function runFullSellerReplyOrchestration(
     });
 
     const sanitizedConversationState = sanitizeConversationStateForLlm(hydratedState as any);
+    console.log("[HISTORY_BEFORE]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      count: mergedHistory.length,
+      tail: mergedHistory.slice(-6).map((t) => t.role),
+    });
     const sanitizedHistory = sanitizeHistoryForLlm(mergedHistory);
+    console.log("[HISTORY_AFTER]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      count: sanitizedHistory.history.length,
+      tail: sanitizedHistory.history.slice(-6).map((t) => t.role),
+      history_quality_score: sanitizedHistory.history_quality_score,
+    });
+    if (hasConsecutiveRoles(sanitizedHistory.history)) {
+      throw new Error("INVALID_HISTORY_STRUCTURE");
+    }
     if (sanitizedHistory.dropped > 0 || !sanitizedHistory.validation.ok) {
       console.log("[OPTIMA_MEMORY_STATE] history_sanitized", {
         request_id: input.request_id,
@@ -233,10 +263,14 @@ export async function runFullSellerReplyOrchestration(
       [...mergedHistory, { role: "user", content: input.message }, { role: "assistant", content: String(gen.reply ?? "") }],
       18,
     );
+    const compactSanitized = sanitizeHistoryForLlm(compactHistory);
+    if (hasConsecutiveRoles(compactSanitized.history)) {
+      throw new Error("INVALID_HISTORY_STRUCTURE");
+    }
     await saveConversationSession({
       sessionId: input.session_id,
       state: finalState,
-      history: compactHistory,
+      history: compactSanitized.history,
     });
     await saveLiveConversationState(input.session_id, {
       typingState: { active: false, requestId: input.request_id, updatedAt: Date.now() },
