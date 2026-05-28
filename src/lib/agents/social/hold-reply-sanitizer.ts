@@ -8,6 +8,8 @@ const HOLD_ONLY =
 
 const HOLD_HEAVY =
   /\b(je\s+vérifie|je\s+verifie|un\s+instant\s+s'il|let\s+me\s+check)\b/i;
+const COMPLAINT_OR_FRUSTRATION =
+  /\b(plainte|probleme|probl[eè]me|de[çc]u|frustr|marche\s+pas|panne|pas\s+content|d[ée]ception)\b/i;
 
 export function isHoldOnlyReply(text: string): boolean {
   return HOLD_ONLY.test(String(text ?? "").trim());
@@ -42,6 +44,10 @@ export function sanitizeHoldReply(args: {
 
   const lang = args.lang ?? "fr";
   const userMsg = String(args.lastUserMessage ?? "").trim();
+  if (COMPLAINT_OR_FRUSTRATION.test(userMsg)) {
+    // SAV priority: keep original human-empathy text, no commercial rewrite.
+    return out;
+  }
   const signal = detectSocialSignal(userMsg);
 
   const mustReplace = isHoldOnlyReply(out) || (out.length < 28 && HOLD_HEAVY.test(out) && signal !== "none");

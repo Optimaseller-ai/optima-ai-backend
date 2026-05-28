@@ -1969,10 +1969,50 @@ export type PostProcessPremiumReplyOpts = {
   transformationLogs?: ReplyTransformLog[];
 };
 
+const COMPLAINT_OR_BREAKDOWN_RE =
+  /\b(plainte|probleme|probl[eè]me|de[çc]u|frustr|marche\s+pas|panne|bug|pas\s+content|d[ée]ception|retour|sav)\b/i;
+
+function isSavPriorityMode(opts?: PostProcessPremiumReplyOpts): boolean {
+  const userMsg = String(opts?.lastUserMessage ?? "");
+  const emotionalState = String((opts?.conversationState as any)?.emotionalContinuity?.state ?? "").toLowerCase();
+  const frustrationScore = Number((opts?.conversationState as any)?.emotionalContinuity?.frustration_score ?? 0);
+  return emotionalState === "frustrated" || frustrationScore > 0.45 || COMPLAINT_OR_BREAKDOWN_RE.test(userMsg);
+}
+
+function applySavHumanMode(text: string, lang: "fr" | "en" | "es"): string {
+  let out = String(text ?? "").trim();
+  if (!out) return out;
+  const bannedCommercial = [
+    /\bje peux vous proposer\b/gi,
+    /\bvous cherchez quoi\b/gi,
+    /\bmod[eè]les?\s+les\s+plus\s+demand[eé]s\b/gi,
+    /\bvous voulez commander\b/gi,
+    /\bpasser commande\b/gi,
+    /\bquel est votre budget\b/gi,
+  ];
+  for (const re of bannedCommercial) out = out.replace(re, "");
+  out = out.replace(/\s{2,}/g, " ").trim();
+  if (out.length <= 8) {
+    if (lang === "en") return "I see. Which part disappointed you most?";
+    if (lang === "es") return "Entiendo. Que parte le decepciono mas?";
+    return "Je vois 😕 qu’est-ce qui vous a déçu dessus ?";
+  }
+  if (out.length > 180) out = out.slice(0, 180).trim();
+  return out;
+}
+
 /** Post-traitement réponse premium — chaîne tracée + garde anti-effondrement. */
 export function postProcessPremiumReply(reply: string, opts?: PostProcessPremiumReplyOpts) {
   const initial = String(reply ?? "").trim();
   if (!initial) return "";
+
+  const lang =
+    opts?.conversationState?.language === "en" ? "en" : opts?.conversationState?.language === "es" ? "es" : "fr";
+
+  if (isSavPriorityMode(opts)) {
+    console.log("[SAV_HUMAN_MODE]", { reason: "frustration_or_complaint", bypass: "sanitize_hold_commercial" });
+    return applySavHumanMode(initial, lang);
+  }
 
   // Human reply protection: if already “human enough”, do not rewrite it.
   // This prevents sanitize_hold / social pipelines from overwriting good LLM output.
@@ -1988,9 +2028,6 @@ export function postProcessPremiumReply(reply: string, opts?: PostProcessPremium
   const extra = Array.isArray(opts?.conversationState?.preferences?.blacklist)
     ? opts!.conversationState!.preferences!.blacklist!.map(String)
     : undefined;
-
-  const lang =
-    opts?.conversationState?.language === "en" ? "en" : opts?.conversationState?.language === "es" ? "es" : "fr";
 
   const allowEmoji = (opts?.repliesSinceLastEmoji ?? 7) >= 7;
 

@@ -72,6 +72,9 @@ function detectCivility(text: string): ProspectCivility | null {
 
 function detectDisplayName(text: string): string | null {
   const raw = String(text ?? "").trim();
+  const emotionWordAfterSelf =
+    /\b(je\s+suis|jsuis|chui|je\s+me\s+sens)\s+(de[çc]u|frustr[eé]|content|fatigu[eé]|triste|heureux|[ée]nerv[eé]|malade|stress[eé])\b/i;
+  if (emotionWordAfterSelf.test(raw)) return null;
   const m =
     raw.match(/\bje\s+m['’]appelle\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-\s]{1,32})\b/i) ||
     raw.match(/\bc['’]est\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-\s]{1,32})\b/i) ||
@@ -79,6 +82,7 @@ function detectDisplayName(text: string): string | null {
   if (!m?.[1]) return null;
   const name = m[1].trim().split(/\s+/).slice(0, 2).join(" ");
   if (name.length < 2) return null;
+  if (/^(de[çc]u|frustr[eé]|content|fatigu[eé]|triste|heureux|[ée]nerv[eé]|malade|stress[eé])$/i.test(name)) return null;
   if (/^(monsieur|madame|mademoiselle)$/i.test(name)) return null;
   return name.slice(0, 48);
 }
