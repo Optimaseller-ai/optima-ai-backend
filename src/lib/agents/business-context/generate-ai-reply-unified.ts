@@ -25,6 +25,31 @@ function lightlySanitizeBackendReply(text: string): string {
     .trim();
 }
 
+function extractRailwayReply(j: Record<string, unknown>): string {
+  const payload = (j.payload && typeof j.payload === "object" ? j.payload : {}) as Record<string, unknown>;
+  const fromPayload = typeof payload.reply === "string" ? payload.reply : "";
+  const fromRoot = typeof j.reply === "string" ? j.reply : "";
+  return fromPayload || fromRoot;
+}
+
+function pickFinalRailwayReply(rawRailwayReply: string): { reply: string; source: "railway" | "llm" | "sanitized" | "fallback" } {
+  const railwayReply = String(rawRailwayReply ?? "").trim();
+  const sanitizedReply = lightlySanitizeBackendReply(railwayReply);
+
+  // Priority order (strict):
+  // 1) railway_reply 2) llm_generated_reply 3) sanitized_reply 4) fallback only if empty
+  if (railwayReply.length > 5) {
+    return { reply: railwayReply, source: "railway" };
+  }
+  if (rawRailwayReply.length > 5) {
+    return { reply: rawRailwayReply, source: "llm" };
+  }
+  if (sanitizedReply.length > 5) {
+    return { reply: sanitizedReply, source: "sanitized" };
+  }
+  return { reply: "", source: "fallback" };
+}
+
 function mapRailwayResponse(
   j: Record<string, unknown>,
 ): GenerateAIReplyResult & { orchestratorPipelineDebug?: Record<string, unknown> } {
@@ -88,22 +113,33 @@ export async function generateAIReplyUnified(
     try {
       const data = await postOptimaAiBackend<Record<string, unknown>>("/v1/chat/reply", railwayPayload);
       const mapped = mapRailwayResponse(data);
-      const backendReply = String(mapped.reply ?? "");
-      const finalReply = lightlySanitizeBackendReply(backendReply);
+      const backendReply = extractRailwayReply(data);
+      const sanitizedReply = lightlySanitizeBackendReply(backendReply);
+      const picked = pickFinalRailwayReply(backendReply);
 
-      // Railway is source-of-truth: never rewrite a valid backend reply.
       console.log("[POST_PROCESS_BEFORE]", backendReply);
-      console.log("[POST_PROCESS_AFTER]", finalReply);
-      if (finalReply.length > 15) {
-        return {
-          ...mapped,
-          reply: finalReply,
-        };
+      console.log("[POST_PROCESS_AFTER]", picked.reply || sanitizedReply || backendReply);
+
+      if (picked.source === "railway" && sanitizedReply && sanitizedReply !== backendReply) {
+        console.log("[FALLBACK_OVERRIDE_BLOCKED]", {
+          reason: "railway_reply_valid_keep_original",
+          railwayLen: backendReply.length,
+          sanitizedLen: sanitizedReply.length,
+        });
       }
-      // Even for short valid replies, keep backend intent and avoid social/greeting injection.
+      if (picked.source === "fallback") {
+        console.log("[FALLBACK_OVERRIDE_BLOCKED]", {
+          reason: "fallback_not_allowed_without_empty_reply",
+          railwayLen: backendReply.length,
+        });
+      }
+      console.log("[FINAL_REPLY_SOURCE]", {
+        source: picked.source,
+      });
+
       return {
         ...mapped,
-        reply: finalReply || backendReply,
+        reply: picked.reply || mapped.reply || backendReply,
       };
     } catch (e) {
       const err = e as Error & { status?: number; validationIssues?: unknown };
