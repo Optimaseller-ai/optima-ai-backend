@@ -1214,6 +1214,7 @@ export async function generateAIReply(args: {
 
   const commercialAdaptForReco = (args.conversationState as any)?.commercial_adaptation as CommercialAdaptationMemory | undefined;
   let recoPrompt = "";
+  let hasRecoPicks = false;
   if (commercialAdaptForReco?.allowProductRecommend !== false && !socialTeasing.active) {
     const reco = recommendFromCatalog({
       message,
@@ -1230,6 +1231,7 @@ export async function generateAIReply(args: {
     if (reco.memoryNext) {
       (args.conversationState as any) = { ...(args.conversationState as any), productMemory: reco.memoryNext };
     }
+    hasRecoPicks = reco.picks.length > 0;
     recoPrompt = formatRecoHintForPrompt({ picks: reco.picks, lang: langForBrain });
     console.log("[CATALOG_RECO]", {
       request_id: args.replyTurn?.request_id,
@@ -1715,7 +1717,7 @@ export async function generateAIReply(args: {
         response: finalOut,
         intent: socialTeasing.active
           ? "social"
-          : reco?.picks?.length
+          : hasRecoPicks
             ? "product_recommendation"
             : businessIntentProbe.intent === "service_inquiry"
               ? "grounded_catalog_reply"
