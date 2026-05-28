@@ -6,6 +6,11 @@ export type GroundingValidationResult = {
   shouldRegenerate: boolean;
 };
 
+export type StrictBusinessOutputFilterResult = {
+  blocked: boolean;
+  issues: string[];
+};
+
 const TELECOM_HALLUCINATION =
   /\b(forfait|forfaits|abonnement\s+mobile|box\s+internet|fibre\s+optique|internet\s+mobile|data\s+illimit|sans\s+engagement\s+mobile|opérateur\s+télécom)\b/i;
 
@@ -35,6 +40,50 @@ function isAbsurdMinimal(reply: string, userMessage: string): boolean {
   if (u.includes("?") && u.length > 12) return true;
   if (SERVICE_RE.test(u) || PRODUCT_RE.test(u)) return true;
   return false;
+}
+
+const HARD_FORBIDDEN_SERVICES =
+  /\b(forfaits?\s+mobiles?|box\s+internet|fibre|recharge\s+data|sim|esim|abonnement\s+mobile)\b/i;
+
+function hasCatalogAnchor(reply: string, kb: BusinessKnowledgeBase): boolean {
+  const r = norm(reply);
+  if (!r) return false;
+  const anchors = [
+    ...kb.services,
+    ...kb.product_categories,
+    ...kb.products.map((p) => p.name),
+  ]
+    .map((x) => norm(x))
+    .filter((x) => x.length >= 3);
+  if (!anchors.length) return false;
+  return anchors.some((a) => r.includes(a) || a.includes(r));
+}
+
+export function enforceStrictBusinessOutputFilter(args: {
+  reply: string;
+  userMessage: string;
+  knowledgeBase: BusinessKnowledgeBase;
+  businessIntent?: string;
+}): StrictBusinessOutputFilterResult {
+  const reply = String(args.reply ?? "").trim();
+  const issues: string[] = [];
+  if (!reply) return { blocked: true, issues: ["empty_reply"] };
+
+  if (HARD_FORBIDDEN_SERVICES.test(reply)) {
+    const allowed = args.knowledgeBase.allowed_vocabulary.join(" ").toLowerCase();
+    if (!HARD_FORBIDDEN_SERVICES.test(allowed)) {
+      issues.push("hard_forbidden_service");
+    }
+  }
+
+  const serviceInquiry =
+    args.businessIntent === "service_inquiry" ||
+    /\b(vous\s+vendez\s+quoi|vos\s+services|vous\s+avez\s+quoi|quoi\s+comme\s+produit)\b/i.test(args.userMessage);
+  if (serviceInquiry && !hasCatalogAnchor(reply, args.knowledgeBase)) {
+    issues.push("service_reply_not_catalog_grounded");
+  }
+
+  return { blocked: issues.length > 0, issues };
 }
 
 export function validateReplyAgainstBusinessContext(args: {

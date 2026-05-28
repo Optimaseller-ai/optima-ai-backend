@@ -3,6 +3,8 @@ const ASSISTANT_ECHO_PATTERNS = [
   /^last\s+agent\s+reply/i,
   /^assistant\s*:/i,
 ];
+const LOW_VALUE_ASSISTANT_MEMORY_RE =
+  /^(derni[eè]re\s+r[eé]ponse\s+agent:\s*)?(ok|okay|d['’]?accord|oui|non|ca marche|ça marche)$/i;
 
 function normKey(s: string) {
   return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -27,6 +29,14 @@ export function cleanMemoryFacts(input: {
       continue;
     }
     if (ASSISTANT_ECHO_PATTERNS.some((re) => re.test(f))) {
+      if (LOW_VALUE_ASSISTANT_MEMORY_RE.test(f)) {
+        removedNoise++;
+        continue;
+      }
+      removedNoise++;
+      continue;
+    }
+    if (LOW_VALUE_ASSISTANT_MEMORY_RE.test(f)) {
       removedNoise++;
       continue;
     }

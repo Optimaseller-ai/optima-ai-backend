@@ -17,7 +17,16 @@ import {
   mergeCatalogProducts,
 } from "@/lib/business-brain/context/business-knowledge-base";
 import { detectBusinessIntent } from "@/lib/business-brain/intent/business-intent-detector";
-import { formatStrictNoHallucinationBlock } from "@/lib/business-brain/grounding/strict-grounding";
+import {
+  enforceStrictBusinessOutputFilter,
+  formatStrictNoHallucinationBlock,
+} from "@/lib/business-brain/grounding/strict-grounding";
+import {
+  analyzeSocialUnderstanding,
+  buildCatalogGroundedReply,
+  isLowHumanQualityReply,
+  pickDirectedGreetingReply,
+} from "@/lib/business-brain/social/social-understanding";
 import { validateAndCleanOutgoingReply } from "@/lib/ai/validators/response-grounding-validator";
 import { cleanMemoryFacts } from "@/lib/ai/memory/conversation-memory-cleaner";
 import { stripAiSpeakerLabels } from "@/lib/chat/pipeline/strip-ai-labels";
@@ -451,6 +460,15 @@ export async function generateAIReply(args: {
   const welcomeDone =
     args.conversationState?.conversationSocialV2?.welcomeDelivered === true || turnCount >= 2;
   const allowEmoji = (args.conversationState?.conversationalEtiquette?.repliesSinceLastEmoji ?? 7) >= 7;
+  const socialUnderstanding = analyzeSocialUnderstanding(message);
+  logStructured("[SOCIAL_ENGINE]", {
+    request_id: args.replyTurn?.request_id,
+    kind: socialUnderstanding.kind,
+    isPureSocial: socialUnderstanding.isPureSocial,
+    isGreetingDirected: socialUnderstanding.isGreetingDirected,
+    isCatalogOverviewInquiry: socialUnderstanding.isCatalogOverviewInquiry,
+    reason: socialUnderstanding.reason,
+  });
 
   const businessIntentProbe = detectBusinessIntent(message);
   logStructured("[BUSINESS_INTENT]", {
@@ -486,6 +504,7 @@ export async function generateAIReply(args: {
     turnCount,
     frustrationLevel01: args.conversationState?.prospectEmotionalState?.frustrationLevel,
   });
+  const transformLogs: import("@/lib/chat/pipeline/reply-transformation-chain").ReplyTransformLog[] = [];
   const weakSignal = detectWeakUserMessage(message);
   console.log("[HUMAN_SILENCE]", {
     request_id: args.replyTurn?.request_id,
@@ -493,6 +512,29 @@ export async function generateAIReply(args: {
     kind: weakSignal.kind,
     reason: weakSignal.reason,
   });
+
+  if (socialUnderstanding.isGreetingDirected && !forceMainPipeline && args.followupAfterHold !== true) {
+    const startGreeting = turnCount <= 1;
+    const greetingReply = pickDirectedGreetingReply({
+      message,
+      lang: langForSocial,
+      seed: `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|greeting`,
+      businessName: sellerProfile.businessName,
+      agentName: sellerProfile.agentName,
+      isConversationStart: startGreeting,
+    });
+    logStructured("[SOCIAL_ENGINE]", {
+      request_id: args.replyTurn?.request_id,
+      action: "direct_greeting_reply",
+      startGreeting,
+      reply: greetingReply,
+    });
+    return {
+      reply: greetingReply,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
+      socialOnlyMode: false,
+    };
+  }
 
   // Highest priority: accept natural endings (no follow-up, no relance, no sales).
   // This must run before quick/social/LLM to avoid the “chatbot tries to keep convo alive” effect.
@@ -625,8 +667,6 @@ export async function generateAIReply(args: {
     .filter((m) => m.role === "assistant")
     .slice(-2)
     .map((m) => m.content);
-
-  const transformLogs: import("@/lib/chat/pipeline/reply-transformation-chain").ReplyTransformLog[] = [];
 
   // Social-only mode must be non-destructive: keep it only as a fallback if LLM fails/empty/toxicity.
   // We do NOT hard-lock to social-only just because the message is a greeting.
@@ -1121,6 +1161,24 @@ export async function generateAIReply(args: {
     categories: businessKnowledgeBase.product_categories,
     summary: businessKnowledgeBase.business_summary,
   });
+  if (socialUnderstanding.isCatalogOverviewInquiry || businessIntentProbe.intent === "service_inquiry") {
+    const catalogReply = buildCatalogGroundedReply({
+      knowledgeBase: businessKnowledgeBase,
+      lang: langForBrain,
+    });
+    logStructured("[CATALOG_GROUNDED_REPLY]", {
+      request_id: args.replyTurn?.request_id,
+      reason: socialUnderstanding.isCatalogOverviewInquiry ? "social_catalog_overview" : "business_intent_service_inquiry",
+      reply: catalogReply,
+      categories: businessKnowledgeBase.product_categories.slice(0, 4),
+      products: businessKnowledgeBase.products.slice(0, 4).map((p) => p.name),
+    });
+    return {
+      reply: catalogReply,
+      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
+      socialOnlyMode: false,
+    };
+  }
 
   const businessKnowledge = retrieveBusinessContextFromSnapshot({
     userId,
@@ -1519,14 +1577,39 @@ export async function generateAIReply(args: {
         knowledgeBase: businessKnowledgeBase,
         agentName: sellerProfile.agentName,
       });
+      let strictOutput = enforceStrictBusinessOutputFilter({
+        reply: processed,
+        userMessage: message,
+        knowledgeBase: businessKnowledgeBase,
+        businessIntent: businessIntentProbe.intent,
+      });
+      let lowQualityBlocked = isLowHumanQualityReply({
+        userMessage: message,
+        reply: processed,
+        social: socialUnderstanding,
+      });
 
-      if (!grounding.ok && grounding.shouldRegenerate) {
+      if ((!grounding.ok && grounding.shouldRegenerate) || strictOutput.blocked || lowQualityBlocked) {
         console.log("[GROUNDING_VALIDATION]", {
           request_id: args.replyTurn?.request_id,
           ok: false,
           issues: grounding.issues,
           regenerate: true,
         });
+        if (strictOutput.blocked) {
+          logStructured("[GROUNDING_BLOCK]", {
+            request_id: args.replyTurn?.request_id,
+            issues: strictOutput.issues,
+            phase: "pre_regen",
+          });
+        }
+        if (lowQualityBlocked) {
+          logStructured("[LOW_QUALITY_REPLY_BLOCKED]", {
+            request_id: args.replyTurn?.request_id,
+            reply: processed,
+            socialKind: socialUnderstanding.kind,
+          });
+        }
         const regenBundle = buildDynamicPromptBundle({
           agentName: sellerProfile.agentName,
           businessName: sellerProfile.businessName,
@@ -1558,16 +1641,52 @@ export async function generateAIReply(args: {
           knowledgeBase: businessKnowledgeBase,
           agentName: sellerProfile.agentName,
         });
+        strictOutput = enforceStrictBusinessOutputFilter({
+          reply: processed,
+          userMessage: message,
+          knowledgeBase: businessKnowledgeBase,
+          businessIntent: businessIntentProbe.intent,
+        });
+        lowQualityBlocked = isLowHumanQualityReply({
+          userMessage: message,
+          reply: processed,
+          social: socialUnderstanding,
+        });
       }
 
-      if (!grounding.ok) {
+      if (!grounding.ok || strictOutput.blocked || lowQualityBlocked) {
         console.log("[GROUNDING_VALIDATION]", {
           request_id: args.replyTurn?.request_id,
           ok: false,
           issues: grounding.issues,
           fallback: true,
         });
-        if (businessIntentProbe.intent === "service_inquiry") {
+        if (strictOutput.blocked) {
+          logStructured("[GROUNDING_BLOCK]", {
+            request_id: args.replyTurn?.request_id,
+            issues: strictOutput.issues,
+            phase: "fallback",
+          });
+        }
+        if (lowQualityBlocked) {
+          logStructured("[LOW_QUALITY_REPLY_BLOCKED]", {
+            request_id: args.replyTurn?.request_id,
+            reply: processed,
+            socialKind: socialUnderstanding.kind,
+            phase: "fallback",
+          });
+        }
+        if (businessIntentProbe.intent === "service_inquiry" || socialUnderstanding.isCatalogOverviewInquiry) {
+          processed = buildCatalogGroundedReply({
+            knowledgeBase: businessKnowledgeBase,
+            lang: langForBrain,
+          });
+          logStructured("[CATALOG_GROUNDED_REPLY]", {
+            request_id: args.replyTurn?.request_id,
+            reason: "strict_grounding_fallback",
+            reply: processed,
+          });
+        } else {
           processed = buildServiceGroundedFallback(businessKnowledgeBase, langForBrain);
         }
       } else {

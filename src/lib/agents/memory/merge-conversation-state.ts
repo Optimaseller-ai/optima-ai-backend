@@ -86,8 +86,9 @@ export function mergeSellerBehaviorStateAfterAssistant(args: {
     .trim()
     .slice(0, 100)
     .replace(/\s+/g, " ");
+  const lowValue = /^(ok|okay|d['’]?accord|oui|non|ca marche|ça marche)$/i.test(snippet);
   const mem = Array.isArray(args.state.memory) ? [...args.state.memory] : [];
-  if (snippet) mem.unshift(`Dernière réponse agent: ${snippet}`);
+  if (snippet && !lowValue) mem.unshift(`Dernière réponse agent: ${snippet}`);
   return {
     ...args.state,
     memory: mem.slice(0, 20),
