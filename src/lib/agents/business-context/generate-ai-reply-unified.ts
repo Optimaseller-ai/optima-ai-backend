@@ -17,6 +17,14 @@ export type GenerateAIReplyUnifiedArgs = Parameters<typeof generateAIReply>[0] &
   railwayMeta?: GenerateAIReplyRailwayMeta;
 };
 
+function lightlySanitizeBackendReply(text: string): string {
+  return String(text ?? "")
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function mapRailwayResponse(
   j: Record<string, unknown>,
 ): GenerateAIReplyResult & { orchestratorPipelineDebug?: Record<string, unknown> } {
@@ -79,7 +87,24 @@ export async function generateAIReplyUnified(
 
     try {
       const data = await postOptimaAiBackend<Record<string, unknown>>("/v1/chat/reply", railwayPayload);
-      return mapRailwayResponse(data);
+      const mapped = mapRailwayResponse(data);
+      const backendReply = String(mapped.reply ?? "");
+      const finalReply = lightlySanitizeBackendReply(backendReply);
+
+      // Railway is source-of-truth: never rewrite a valid backend reply.
+      console.log("[POST_PROCESS_BEFORE]", backendReply);
+      console.log("[POST_PROCESS_AFTER]", finalReply);
+      if (finalReply.length > 15) {
+        return {
+          ...mapped,
+          reply: finalReply,
+        };
+      }
+      // Even for short valid replies, keep backend intent and avoid social/greeting injection.
+      return {
+        ...mapped,
+        reply: finalReply || backendReply,
+      };
     } catch (e) {
       const err = e as Error & { status?: number; validationIssues?: unknown };
       const em = String(err.message ?? "");
