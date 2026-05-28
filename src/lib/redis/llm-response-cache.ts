@@ -23,12 +23,14 @@ function keyFor(args: {
     contextKey: args.contextKey ?? "",
   });
   const hash = createHash("sha256").update(raw).digest("hex");
-  return redisKey("llm_cache", hash);
+  return redisKey("llm", "cache", hash);
 }
 
-function ttlByIntent(intent: "social" | "catalog" | "default"): number {
+function ttlByIntent(intent: "greeting" | "social" | "product_recommendation" | "grounded_catalog_reply" | "default"): number {
+  if (intent === "greeting") return 15 * 60;
   if (intent === "social") return 30 * 60;
-  if (intent === "catalog") return 6 * 60 * 60;
+  if (intent === "product_recommendation") return 2 * 60 * 60;
+  if (intent === "grounded_catalog_reply") return 6 * 60 * 60;
   return 90 * 60;
 }
 
@@ -56,7 +58,7 @@ export async function saveLlmCache(args: {
   message: string;
   contextKey?: string;
   response: string;
-  intent?: "social" | "catalog" | "default";
+  intent?: "greeting" | "social" | "product_recommendation" | "grounded_catalog_reply" | "default";
 }): Promise<void> {
   const key = keyFor(args);
   await redisSet(

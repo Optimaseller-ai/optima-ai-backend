@@ -8,8 +8,8 @@ let warnedMissing = false;
 
 function resolveRedisCredentials(): { url: string; token: string } | null {
   const env = loadEnv();
-  const url = env.REDIS_URL ?? env.UPSTASH_REDIS_REST_URL;
-  const token = env.REDIS_TOKEN ?? env.UPSTASH_REDIS_REST_TOKEN;
+  const url = env.UPSTASH_REDIS_REST_URL;
+  const token = env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
   return { url, token };
 }

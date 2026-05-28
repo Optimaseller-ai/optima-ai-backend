@@ -97,7 +97,7 @@ export function buildHydratedState(args: {
 export async function loadConversationSession(sessionId: string): Promise<ConversationSessionSnapshot | null> {
   const key = sessionRedisKey(sessionId);
   const out = await redisGet<ConversationSessionSnapshot>(key);
-  logStructured("[REDIS_LOAD]", { key, found: Boolean(out) });
+  logStructured("[REDIS_SESSION_LOAD]", { key, found: Boolean(out) });
   return out;
 }
 
@@ -109,7 +109,7 @@ export async function saveConversationSession(args: {
   const key = sessionRedisKey(args.sessionId);
   const snapshot = toSnapshot(args);
   await redisSet(key, snapshot, SESSION_TTL_SEC);
-  logStructured("[REDIS_SAVE]", {
+  logStructured("[REDIS_SESSION_SAVE]", {
     key,
     history: snapshot.compactHistory.length,
     viewedProducts: snapshot.viewedProducts.length,

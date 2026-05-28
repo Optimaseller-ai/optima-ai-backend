@@ -1713,7 +1713,13 @@ export async function generateAIReply(args: {
         message,
         contextKey: cacheContextKey,
         response: finalOut,
-        intent: businessIntentProbe.intent === "service_inquiry" ? "catalog" : socialTeasing.active ? "social" : "default",
+        intent: socialTeasing.active
+          ? "social"
+          : reco?.picks?.length
+            ? "product_recommendation"
+            : businessIntentProbe.intent === "service_inquiry"
+              ? "grounded_catalog_reply"
+              : "default",
       });
       return finalOut;
     },

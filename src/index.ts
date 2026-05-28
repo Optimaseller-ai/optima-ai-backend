@@ -4,6 +4,7 @@ import { loadEnv } from "./config/env.js";
 import { healthRoutes } from "./routes/health.js";
 import { chatRoutes } from "./routes/chat.js";
 import { getAdminClientReadiness } from "@/lib/supabase/admin";
+import { validateRedisEnvOnBoot } from "@/lib/redis/redis-env-validator";
 
 async function main() {
   const env = loadEnv();
@@ -16,6 +17,8 @@ async function main() {
   } else {
     console.log("[OPTIMA_BACKEND] supabase_admin_ready=false", { reason: readiness.reason });
   }
+
+  await validateRedisEnvOnBoot();
 
   const app = Fastify({
     logger: {
