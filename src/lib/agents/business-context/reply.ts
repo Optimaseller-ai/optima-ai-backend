@@ -30,6 +30,7 @@ import {
 } from "@/lib/business-brain/social/social-understanding";
 import { validateAndCleanOutgoingReply } from "@/lib/ai/validators/response-grounding-validator";
 import { cleanMemoryFacts } from "@/lib/ai/memory/conversation-memory-cleaner";
+import { buildHumanContext, type HumanMemoryState } from "@/lib/chat/memory/human-memory-engine";
 import { stripAiSpeakerLabels } from "@/lib/chat/pipeline/strip-ai-labels";
 import {
   resolveBusinessHoursContext,
@@ -1431,7 +1432,34 @@ export async function generateAIReply(args: {
       return support.text;
     })
     .filter((x): x is string => Boolean(x));
-  const memFacts = cleanMemoryFacts({ facts: cleanedLearningFacts, limit: 3 });
+  const humanContextFacts = buildHumanContext({
+    memoryState: ((args.conversationState as any)?.humanMemoryState ??
+      {
+        memories: (args.conversationState as any)?.humanMemory ?? [],
+        emotionalState: (args.conversationState as any)?.humanEmotionalState ?? {
+          mood: "neutral",
+          frustration01: 0,
+          trust01: 0.4,
+          warmth01: 0.4,
+          updatedAt: Date.now(),
+        },
+        relationship: (args.conversationState as any)?.humanRelationship ?? {
+          familiarity01: 0.2,
+          trust01: 0.4,
+          turnsTogether: args.conversationState?.stats?.turn_count ?? 0,
+        },
+        updatedAt: Date.now(),
+      }) as HumanMemoryState,
+    maxItems: 4,
+  });
+  if (humanContextFacts.length) {
+    logStructured("[HUMAN_MEMORY_USED]", {
+      request_id: args.replyTurn?.request_id,
+      items: humanContextFacts.length,
+      preview: humanContextFacts,
+    });
+  }
+  const memFacts = cleanMemoryFacts({ facts: [...humanContextFacts, ...cleanedLearningFacts], limit: 5 });
   console.log("[MEMORY_COMPRESSION]", {
     request_id: args.replyTurn?.request_id,
     factsBefore: learningFactsRaw.length,

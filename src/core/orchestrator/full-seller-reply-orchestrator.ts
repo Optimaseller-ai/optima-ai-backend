@@ -32,6 +32,8 @@ import { captureRelationshipMemory, restoreRelationshipMemory } from "@/lib/redi
 import { captureFollowupMemory } from "@/lib/redis/followup-memory";
 import { filterImportantHistory, filterImportantMemoryLines } from "@/lib/redis/memory-importance-score";
 import { saveLiveConversationState } from "@/lib/redis/live-conversation-state";
+import { loadHumanMemory, saveHumanMemory } from "@/lib/redis/human-memory-store";
+import { buildHumanContext, updateHumanMemory } from "@/lib/chat/memory/human-memory-engine";
 import { logStructured } from "@/lib/logging/structured-log";
 import {
   hasConsecutiveRoles,
@@ -154,6 +156,21 @@ export async function runFullSellerReplyOrchestration(
     });
 
     const redisSession = await loadConversationSession(input.session_id);
+    const humanMemoryState = await loadHumanMemory(input.session_id);
+    if (humanMemoryState) {
+      (input.conversation_state as any) = {
+        ...(input.conversation_state ?? {}),
+        humanMemoryState,
+        humanMemory: humanMemoryState.memories,
+        humanEmotionalState: humanMemoryState.emotionalState,
+      };
+      logStructured("[EMOTIONAL_STATE]", {
+        session_id: input.session_id,
+        mood: humanMemoryState.emotionalState.mood,
+        frustration: humanMemoryState.emotionalState.frustration01,
+        trust: humanMemoryState.emotionalState.trust01,
+      });
+    }
     console.log("[REDIS_BEFORE]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -309,6 +326,28 @@ export async function runFullSellerReplyOrchestration(
       state: finalState,
       history: toLlmHistory(compactTurns),
     });
+    const nextHumanMemory = updateHumanMemory({
+      previous: humanMemoryState ?? undefined,
+      userMessage: input.message,
+      assistantReply: String(gen.reply ?? ""),
+      turnsTogether: Number(finalState?.stats?.turn_count ?? 0),
+    });
+    const humanContextPreview = buildHumanContext({ memoryState: nextHumanMemory, maxItems: 4 });
+    logStructured("[HUMAN_MEMORY_EXTRACTED]", {
+      session_id: input.session_id,
+      extracted_count: nextHumanMemory.memories.length,
+      context_preview: humanContextPreview,
+    });
+    for (const m of nextHumanMemory.memories.slice(0, 8)) {
+      logStructured("[MEMORY_IMPORTANCE_SCORE]", {
+        session_id: input.session_id,
+        category: m.category,
+        content: m.content,
+        importance: m.importanceScore,
+        emotionalWeight: m.emotionalWeight,
+      });
+    }
+    await saveHumanMemory(input.session_id, nextHumanMemory);
     console.log("[REDIS_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,
