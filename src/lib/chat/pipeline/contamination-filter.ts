@@ -1,3 +1,11 @@
+import {
+  computeHistoryQualityScore as computeHistoryQualityScoreManager,
+  fromLlmHistory,
+  sanitizeConversationHistory as sanitizeConversationHistoryManager,
+  toLlmHistory,
+  validateConversationHistory,
+} from "./conversationHistoryManager";
+
 export const SYSTEM_MEMORY_BLACKLIST = [
   "je suis là",
   "que recherchez-vous",
@@ -39,18 +47,26 @@ export function sanitizeHistoryForLlm(
 } {
   const list = Array.isArray(history) ? history : [];
   const beforeCount = list.length;
-  const sanitized = sanitizeConversationHistory(list);
-  const validation = validateHistoryForLLM(sanitized.history);
-  const quality = computeHistoryQualityScore(sanitized.history);
+  const turns = fromLlmHistory(list);
+  const sanitizedTurns = sanitizeConversationHistoryManager(turns);
+  const sanitizedHistory = toLlmHistory(sanitizedTurns.history);
+  const validation = validateHistoryForLLM(sanitizedHistory);
+  const quality = computeHistoryQualityScore(sanitizedTurns.history);
   console.log("[HISTORY_SANITIZED]", {
     before_count: beforeCount,
-    after_count: sanitized.history.length,
-    dropped: sanitized.dropped,
+    after_count: sanitizedHistory.length,
+    dropped:
+      sanitizedTurns.removedEmpty +
+      sanitizedTurns.removedDuplicates +
+      sanitizedTurns.removedRepeats,
     history_quality_score: quality,
   });
   return {
-    history: sanitized.history,
-    dropped: sanitized.dropped,
+    history: sanitizedHistory,
+    dropped:
+      sanitizedTurns.removedEmpty +
+      sanitizedTurns.removedDuplicates +
+      sanitizedTurns.removedRepeats,
     history_quality_score: quality,
     validation,
   };
@@ -78,51 +94,21 @@ function isTooShortNoise(content: string): boolean {
 export function sanitizeConversationHistory(
   history: Array<{ role: "user" | "assistant"; content: string }>,
 ): { history: Array<{ role: "user" | "assistant"; content: string }>; dropped: number } {
-  const list = Array.isArray(history) ? history : [];
-  const clean: Array<{ role: "user" | "assistant"; content: string }> = [];
-  let dropped = 0;
-
-  for (const turn of list) {
-    const role = turn?.role === "assistant" ? "assistant" : "user";
-    const content = String(turn?.content ?? "").trim().replace(/\s+/g, " ");
-    const norm = normalizeHistoryContent(content);
-
-    if (!norm || isTooShortNoise(content) || hasContaminationPhrase(content)) {
-      dropped += 1;
-      continue;
-    }
-
-    // Block exact consecutive duplicates by same role.
-    const last = clean[clean.length - 1];
-    if (last && last.role === role && normalizeHistoryContent(last.content) === norm) {
-      dropped += 1;
-      console.log("[HISTORY_DUPLICATE_BLOCKED]", { role, content: norm.slice(0, 80) });
-      continue;
-    }
-
-    // Limit repetitions: same normalized message >2 times in last 10 turns.
-    const recent = clean.slice(-10);
-    const repeatCount = recent.filter((t) => normalizeHistoryContent(t.content) === norm).length;
-    if (repeatCount >= 2) {
-      dropped += 1;
-      console.log("[HISTORY_REPEAT_LIMIT_BLOCKED]", { role, content: norm.slice(0, 80), repeatCount: repeatCount + 1 });
-      continue;
-    }
-
-    // Force alternance: never push same role in a row; replace last with newest.
-    if (last && last.role === role) {
-      clean[clean.length - 1] = { role, content };
-      console.log("[HISTORY_ALTERNANCE_REPAIRED]", { role, mode: "replace_last" });
-      continue;
-    }
-
-    clean.push({ role, content });
+  const turns = fromLlmHistory(Array.isArray(history) ? history : []);
+  const sanitized = sanitizeConversationHistoryManager(
+    turns.filter((t) => !isTooShortNoise(t.content) && !hasContaminationPhrase(t.content)),
+  );
+  if (sanitized.removedDuplicates > 0) {
+    console.log("[HISTORY_DUPLICATE_BLOCKED]", { removed: sanitized.removedDuplicates });
   }
-
-  // Keep recent bounded history for LLM.
-  const bounded = clean.slice(-24);
-  dropped += clean.length - bounded.length;
-  return { history: bounded, dropped };
+  if (sanitized.removedRepeats > 0) {
+    console.log("[HISTORY_REPEAT_LIMIT_BLOCKED]", { removed: sanitized.removedRepeats });
+  }
+  if (sanitized.alternanceRepairs > 0) {
+    console.log("[HISTORY_ALTERNANCE_REPAIRED]", { repaired: sanitized.alternanceRepairs });
+  }
+  const dropped = sanitized.removedEmpty + sanitized.removedDuplicates + sanitized.removedRepeats;
+  return { history: toLlmHistory(sanitized.history), dropped };
 }
 
 export function validateHistoryForLLM(
@@ -149,21 +135,8 @@ export function validateHistoryForLLM(
 }
 
 function computeHistoryQualityScore(history: Array<{ role: "user" | "assistant"; content: string }>): number {
-  const list = Array.isArray(history) ? history : [];
-  if (!list.length) return 0;
-
-  let alternanceBreaks = 0;
-  for (let i = 1; i < list.length; i++) {
-    if (list[i]!.role === list[i - 1]!.role) alternanceBreaks += 1;
-  }
-  const alternanceScore = Math.max(0, 1 - alternanceBreaks / Math.max(1, list.length - 1));
-  const normalized = list.map((t) => normalizeHistoryContent(t.content));
-  const diversityScore = new Set(normalized).size / Math.max(1, list.length);
-  const avgLen = normalized.reduce((a, b) => a + b.length, 0) / Math.max(1, normalized.length);
-  const coherenceScore = Math.min(1, avgLen / 40);
-  const repetitionPenalty = Math.max(0, 1 - (1 - diversityScore));
-  const score = 0.4 * alternanceScore + 0.25 * diversityScore + 0.2 * coherenceScore + 0.15 * repetitionPenalty;
-  return Number(score.toFixed(3));
+  const turns = fromLlmHistory(Array.isArray(history) ? history : []);
+  return computeHistoryQualityScoreManager(turns);
 }
 
 function deepCleanUnknown(value: unknown): unknown {

@@ -142,11 +142,17 @@ export async function chatRoutes(app: FastifyInstance) {
       if (msg === "DUPLICATE_MESSAGE_FINGERPRINT") {
         return reply.status(409).send({ error: "duplicate_message_fingerprint" });
       }
+      if (msg === "CONVERSATION_LOCK_BUSY") {
+        return reply.status(409).send({ error: "conversation_lock_busy" });
+      }
       if (msg === "STALE_REPLY_TURN") {
         return reply.status(409).send({ error: "stale_reply_turn" });
       }
       if (msg === "INVALID_HISTORY_STRUCTURE") {
         return reply.status(422).send({ error: "invalid_history_structure" });
+      }
+      if (msg === "INVALID_CONSECUTIVE_ROLES" || msg === "INVALID_HISTORY_EMPTY" || msg === "INVALID_HISTORY_EMPTY_CONTENT") {
+        return reply.status(422).send({ error: "invalid_history_structure", message: msg });
       }
       if (code === "REPLY_ENGINE_NOT_FOUND" || msg.includes("REPLY_ENGINE_NOT_FOUND")) {
         req.log.error(e);

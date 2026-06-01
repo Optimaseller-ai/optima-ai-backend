@@ -1,7 +1,13 @@
 import type { OpenRouterMessage } from "./openrouter-client.js";
 import { openRouterChat } from "./openrouter-client.js";
 import { createHash } from "crypto";
-import { acquireMessageFingerprint, acquireReplyLock, releaseReplyLock } from "../../redis/anti-duplicate.js";
+import {
+  acquireConversationLock,
+  acquireMessageFingerprint,
+  acquireReplyLock,
+  releaseConversationLock,
+  releaseReplyLock,
+} from "../../redis/anti-duplicate.js";
 import { setTypingState, clearTypingState } from "../../redis/typing-state.js";
 import { scheduleTimingJob, type TimingJobKind } from "../../queue/timing-queue.js";
 import { generateAIReply } from "@/lib/agents/business-context/reply";
@@ -10,9 +16,17 @@ import { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversation-p
 import { jsonSafe } from "@/lib/chat/pipeline/json-safe";
 import {
   buildHydratedState,
+  getSessionHistoryAsMessages,
   loadConversationSession,
   saveConversationSession,
 } from "@/lib/redis/conversation-session-store";
+import {
+  appendConversationTurn,
+  fromLlmHistory,
+  sanitizeConversationHistory,
+  toLlmHistory,
+  validateConversationHistory,
+} from "@/lib/chat/pipeline/conversationHistoryManager";
 import { captureEmotionalPersistence, restoreEmotionalPersistence } from "@/lib/redis/emotion-persistence";
 import { captureRelationshipMemory, restoreRelationshipMemory } from "@/lib/redis/relationship-memory";
 import { captureFollowupMemory } from "@/lib/redis/followup-memory";
@@ -81,6 +95,10 @@ export async function runFullSellerReplyOrchestration(
   if (!uniqueMessage) {
     throw new Error("DUPLICATE_MESSAGE_FINGERPRINT");
   }
+  const conversationLocked = await acquireConversationLock(input.session_id, input.request_id);
+  if (!conversationLocked) {
+    throw new Error("CONVERSATION_LOCK_BUSY");
+  }
   const locked = await acquireReplyLock(input.session_id, input.request_id);
   if (!locked) {
     throw new Error("DUPLICATE_REPLY_REQUEST");
@@ -136,6 +154,12 @@ export async function runFullSellerReplyOrchestration(
     });
 
     const redisSession = await loadConversationSession(input.session_id);
+    console.log("[REDIS_BEFORE]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      found: Boolean(redisSession),
+      count: getSessionHistoryAsMessages(redisSession).length,
+    });
     let hydratedState = buildHydratedState({
       incoming: (input.conversation_state ?? {}) as any,
       fromRedis: redisSession,
@@ -152,7 +176,20 @@ export async function runFullSellerReplyOrchestration(
     }
     hydratedState = restoreRelationshipMemory(hydratedState, (redisSession as any)?.relationshipMemory);
     hydratedState.memory = filterImportantMemoryLines(hydratedState.memory ?? [], 14);
-    const mergedHistory = filterImportantHistory([...(redisSession?.compactHistory ?? []), ...(Array.isArray(input.history) ? input.history : [])], 16);
+    const mergedRawHistory = filterImportantHistory(
+      [...getSessionHistoryAsMessages(redisSession), ...(Array.isArray(input.history) ? input.history : [])],
+      20,
+    );
+    const mergedSanitizedTurns = sanitizeConversationHistory(fromLlmHistory(mergedRawHistory));
+    let workingTurns = mergedSanitizedTurns.history;
+    const appendedUser = appendConversationTurn(workingTurns, {
+      role: "user",
+      content: input.message,
+      createdAt: Date.now(),
+    });
+    workingTurns = sanitizeConversationHistory(appendedUser.history).history;
+    validateConversationHistory(workingTurns);
+    const mergedHistory = toLlmHistory(workingTurns);
     logStructured("[SESSION_HYDRATED]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -165,8 +202,9 @@ export async function runFullSellerReplyOrchestration(
     console.log("[HISTORY_BEFORE]", {
       session_id: input.session_id,
       request_id: input.request_id,
-      count: mergedHistory.length,
-      tail: mergedHistory.slice(-6).map((t) => t.role),
+      count: mergedRawHistory.length,
+      tail: mergedRawHistory.slice(-6).map((t) => t.role),
+      fingerprints: workingTurns.slice(-6).map((t) => t.fingerprint),
     });
     const sanitizedHistory = sanitizeHistoryForLlm(mergedHistory);
     console.log("[HISTORY_AFTER]", {
@@ -260,17 +298,22 @@ export async function runFullSellerReplyOrchestration(
       finalState.emotionPersistence = emotionPersist;
     }
     const compactHistory = filterImportantHistory(
-      [...mergedHistory, { role: "user", content: input.message }, { role: "assistant", content: String(gen.reply ?? "") }],
+      [...mergedHistory, { role: "assistant", content: String(gen.reply ?? "") }],
       18,
     );
-    const compactSanitized = sanitizeHistoryForLlm(compactHistory);
-    if (hasConsecutiveRoles(compactSanitized.history)) {
-      throw new Error("INVALID_HISTORY_STRUCTURE");
-    }
+    const compactTurns = sanitizeConversationHistory(fromLlmHistory(compactHistory)).history;
+    validateConversationHistory(compactTurns);
+    const compactSanitized = sanitizeHistoryForLlm(toLlmHistory(compactTurns));
     await saveConversationSession({
       sessionId: input.session_id,
       state: finalState,
-      history: compactSanitized.history,
+      history: toLlmHistory(compactTurns),
+    });
+    console.log("[REDIS_AFTER]", {
+      session_id: input.session_id,
+      request_id: input.request_id,
+      count: compactTurns.length,
+      fingerprints: compactTurns.slice(-6).map((t) => t.fingerprint),
     });
     await saveLiveConversationState(input.session_id, {
       typingState: { active: false, requestId: input.request_id, updatedAt: Date.now() },
@@ -316,6 +359,7 @@ export async function runFullSellerReplyOrchestration(
   } finally {
     await clearTypingState(input.session_id);
     await releaseReplyLock(input.session_id, input.request_id);
+    await releaseConversationLock(input.session_id, input.request_id);
   }
 }
 

@@ -1,10 +1,12 @@
 import { getRedis, redisKey } from "./client.js";
 
 const memoryLocks = new Map<string, string>();
+const conversationLocks = new Map<string, string>();
 const memoryFingerprints = new Map<string, number>();
 
 const LOCK_TTL_SEC = 90;
-const MESSAGE_FP_TTL_SEC = 45;
+const CONVERSATION_LOCK_TTL_SEC = 45;
+const MESSAGE_FP_TTL_SEC = 30;
 
 /** Empêche deux générations OpenRouter simultanées pour la même session. */
 export async function acquireReplyLock(sessionId: string, requestId: string): Promise<boolean> {
@@ -34,6 +36,41 @@ export async function releaseReplyLock(sessionId: string, requestId: string): Pr
 
   if (memoryLocks.get(sessionId) === requestId) {
     memoryLocks.delete(sessionId);
+  }
+}
+
+export async function acquireConversationLock(sessionId: string, requestId: string): Promise<boolean> {
+  const key = redisKey("lock:conversation", sessionId);
+  const r = getRedis();
+  if (r) {
+    const ok = await r.set(key, requestId, { nx: true, ex: CONVERSATION_LOCK_TTL_SEC });
+    if (ok === "OK") {
+      console.log("[LOCK_ACQUIRED]", { key, session_id: sessionId, request_id: requestId });
+      return true;
+    }
+    return false;
+  }
+  const cur = conversationLocks.get(sessionId);
+  if (cur && cur !== requestId) return false;
+  conversationLocks.set(sessionId, requestId);
+  console.log("[LOCK_ACQUIRED]", { key, session_id: sessionId, request_id: requestId, mode: "memory" });
+  return true;
+}
+
+export async function releaseConversationLock(sessionId: string, requestId: string): Promise<void> {
+  const key = redisKey("lock:conversation", sessionId);
+  const r = getRedis();
+  if (r) {
+    const current = await r.get<string>(key);
+    if (current === requestId) {
+      await r.del(key);
+      console.log("[LOCK_RELEASED]", { key, session_id: sessionId, request_id: requestId });
+    }
+    return;
+  }
+  if (conversationLocks.get(sessionId) === requestId) {
+    conversationLocks.delete(sessionId);
+    console.log("[LOCK_RELEASED]", { key, session_id: sessionId, request_id: requestId, mode: "memory" });
   }
 }
 

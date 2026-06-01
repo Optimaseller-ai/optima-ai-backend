@@ -1,4 +1,10 @@
 import type { SellerBehaviorConversationState } from "@/lib/agents/memory/conversation-state";
+import {
+  fromLlmHistory,
+  sanitizeConversationHistory,
+  toLlmHistory,
+  type ConversationTurn,
+} from "@/lib/chat/pipeline/conversationHistoryManager";
 import { logStructured } from "@/lib/logging/structured-log";
 import { filterImportantHistory, filterImportantMemoryLines } from "./memory-importance-score";
 import { redisGet, redisSet, sessionRedisKey } from "./redis-client";
@@ -7,6 +13,7 @@ const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
 
 export type ConversationSessionSnapshot = {
   sessionId: string;
+  historyTurns: ConversationTurn[];
   compactHistory: Array<{ role: "user" | "assistant"; content: string }>;
   emotionalState?: SellerBehaviorConversationState["prospectEmotionalState"];
   leadTemperature?: string;
@@ -29,9 +36,12 @@ function toSnapshot(args: {
   history: Array<{ role: "user" | "assistant"; content: string }>;
 }): ConversationSessionSnapshot {
   const state = args.state ?? {};
+  const turns = sanitizeConversationHistory(fromLlmHistory(args.history)).history;
+  const compact = filterImportantHistory(toLlmHistory(turns), 14);
   return {
     sessionId: args.sessionId,
-    compactHistory: filterImportantHistory(args.history, 14),
+    historyTurns: turns,
+    compactHistory: compact,
     emotionalState: state.prospectEmotionalState,
     leadTemperature: state.automation?.leadTemperature,
     viewedProducts: state.productMemory?.viewedProducts ?? [],
@@ -99,6 +109,17 @@ export async function loadConversationSession(sessionId: string): Promise<Conver
   const out = await redisGet<ConversationSessionSnapshot>(key);
   logStructured("[REDIS_SESSION_LOAD]", { key, found: Boolean(out) });
   return out;
+}
+
+export function getSessionHistoryAsMessages(snapshot: ConversationSessionSnapshot | null | undefined): Array<{
+  role: "user" | "assistant";
+  content: string;
+}> {
+  if (!snapshot) return [];
+  if (Array.isArray(snapshot.historyTurns) && snapshot.historyTurns.length) {
+    return toLlmHistory(snapshot.historyTurns);
+  }
+  return Array.isArray(snapshot.compactHistory) ? snapshot.compactHistory : [];
 }
 
 export async function saveConversationSession(args: {

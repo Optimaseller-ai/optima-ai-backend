@@ -4,7 +4,13 @@ import type { GenerateAIReplyResult } from "@/lib/agents/business-context/reply"
 import { generateAIReply } from "@/lib/agents/business-context/reply";
 import { postOptimaAiBackend } from "@/lib/ai/openrouter-backend-client";
 import { isRailwayFullOrchestratorEnabled } from "@/lib/ai/openrouter-proxy-config";
-import { hasConsecutiveRoles, sanitizeHistoryForLlm } from "@/lib/chat/pipeline/contamination-filter";
+import {
+  fromLlmHistory,
+  sanitizeConversationHistory,
+  toLlmHistory,
+  validateConversationHistory,
+  computeHistoryQualityScore,
+} from "@/lib/chat/pipeline/conversationHistoryManager";
 import {
   buildRailwayChatReplyPayload,
   describeRailwayPayloadForLog,
@@ -92,7 +98,9 @@ export async function generateAIReplyUnified(
     }
 
     const rawHistory = Array.isArray(localArgs.history) ? localArgs.history : [];
-    const cleanedHistoryPack = sanitizeHistoryForLlm(rawHistory);
+    const sanitizedTurns = sanitizeConversationHistory(fromLlmHistory(rawHistory));
+    const validatedHistory = toLlmHistory(sanitizedTurns.history);
+    validateConversationHistory(sanitizedTurns.history);
     console.log("[HISTORY_BEFORE]", {
       session_id: railwayMeta.session_id,
       request_id: railwayMeta.request_id,
@@ -102,13 +110,10 @@ export async function generateAIReplyUnified(
     console.log("[HISTORY_AFTER]", {
       session_id: railwayMeta.session_id,
       request_id: railwayMeta.request_id,
-      count: cleanedHistoryPack.history.length,
-      tail: cleanedHistoryPack.history.slice(-6).map((t) => t.role),
-      history_quality_score: cleanedHistoryPack.history_quality_score,
+      count: validatedHistory.length,
+      tail: validatedHistory.slice(-6).map((t) => t.role),
+      history_quality_score: computeHistoryQualityScore(sanitizedTurns.history),
     });
-    if (hasConsecutiveRoles(cleanedHistoryPack.history)) {
-      throw new Error("INVALID_HISTORY_STRUCTURE");
-    }
 
     const railwayPayload = buildRailwayChatReplyPayload({
       railwayMeta,
@@ -120,7 +125,7 @@ export async function generateAIReplyUnified(
       salesStyle: localArgs.salesStyle,
       businessName: localArgs.businessName,
       conversationState: localArgs.conversationState,
-      history: cleanedHistoryPack.history,
+      history: validatedHistory,
       agentRole: localArgs.agentRole,
       agentTone: localArgs.agentTone,
       personaKey: localArgs.personaKey ?? null,
