@@ -1459,7 +1459,9 @@ export async function generateAIReply(args: {
       preview: humanContextFacts,
     });
   }
-  const memFacts = cleanMemoryFacts({ facts: [...humanContextFacts, ...cleanedLearningFacts], limit: 5 });
+  const emotionalContinuityContext = String((args.conversationState as any)?.emotionalContinuityContext ?? "").trim();
+  const emotionalFacts = emotionalContinuityContext ? [emotionalContinuityContext] : [];
+  const memFacts = cleanMemoryFacts({ facts: [...emotionalFacts, ...humanContextFacts, ...cleanedLearningFacts], limit: 5 });
   console.log("[MEMORY_COMPRESSION]", {
     request_id: args.replyTurn?.request_id,
     factsBefore: learningFactsRaw.length,

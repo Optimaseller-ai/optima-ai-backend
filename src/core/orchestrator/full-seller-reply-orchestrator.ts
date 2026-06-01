@@ -34,6 +34,11 @@ import { filterImportantHistory, filterImportantMemoryLines } from "@/lib/redis/
 import { saveLiveConversationState } from "@/lib/redis/live-conversation-state";
 import { loadHumanMemory, saveHumanMemory } from "@/lib/redis/human-memory-store";
 import { buildHumanContext, updateHumanMemory } from "@/lib/chat/memory/human-memory-engine";
+import {
+  buildEmotionalContext,
+  updateEmotionalContinuity,
+} from "@/lib/chat/emotion/emotional-continuity-engine";
+import { loadEmotionalState, saveEmotionalState } from "@/lib/redis/emotional-state-store";
 import { logStructured } from "@/lib/logging/structured-log";
 import {
   hasConsecutiveRoles,
@@ -157,6 +162,42 @@ export async function runFullSellerReplyOrchestration(
 
     const redisSession = await loadConversationSession(input.session_id);
     const humanMemoryState = await loadHumanMemory(input.session_id);
+    const emotionalState = await loadEmotionalState(input.session_id);
+    const nextEmotionalState = updateEmotionalContinuity({
+      previous: emotionalState ?? undefined,
+      userMessage: input.message,
+    });
+    const emotionalContext = buildEmotionalContext({ snapshot: nextEmotionalState });
+    if (emotionalContext) {
+      logStructured("[EMOTIONAL_CONTEXT_BUILT]", {
+        session_id: input.session_id,
+        context: emotionalContext,
+      });
+    }
+    logStructured("[EMOTION_DETECTED]", {
+      session_id: input.session_id,
+      emotion: nextEmotionalState.active.label,
+      score: nextEmotionalState.active.score,
+      confidence: nextEmotionalState.active.confidence,
+    });
+    logStructured("[RELATIONSHIP_STATE]", {
+      session_id: input.session_id,
+      stage: nextEmotionalState.relationship.relationshipStage,
+      momentum: nextEmotionalState.relationship.emotionalMomentum,
+    });
+    logStructured("[TRUST_SCORE]", { session_id: input.session_id, value: nextEmotionalState.relationship.trustScore });
+    logStructured("[WARMTH_SCORE]", { session_id: input.session_id, value: nextEmotionalState.relationship.warmthScore });
+    logStructured("[FRUSTRATION_SCORE]", { session_id: input.session_id, value: nextEmotionalState.relationship.frustrationScore });
+    logStructured("[EMOTIONAL_DECAY]", {
+      session_id: input.session_id,
+      decayRate: nextEmotionalState.active.decayRate,
+      minPersistTurns: nextEmotionalState.active.minPersistTurns,
+    });
+    (input.conversation_state as any) = {
+      ...(input.conversation_state ?? {}),
+      emotionalContinuityState: nextEmotionalState,
+      emotionalContinuityContext: emotionalContext,
+    };
     if (humanMemoryState) {
       (input.conversation_state as any) = {
         ...(input.conversation_state ?? {}),
@@ -348,6 +389,7 @@ export async function runFullSellerReplyOrchestration(
       });
     }
     await saveHumanMemory(input.session_id, nextHumanMemory);
+    await saveEmotionalState(input.session_id, nextEmotionalState);
     console.log("[REDIS_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,
