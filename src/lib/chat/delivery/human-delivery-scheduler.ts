@@ -1,6 +1,13 @@
 import { redisDel, redisGet, redisKey, redisSet } from "@/lib/redis/redis-client";
 import { logStructured } from "@/lib/logging/structured-log";
 import type { FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
+import {
+  broadcastFragment,
+  broadcastMessageComplete,
+  broadcastMessageRead,
+  broadcastTypingStart,
+  broadcastTypingStop,
+} from "@/lib/realtime/human-delivery-broadcaster";
 
 export type DeliveryEvent = "seen" | "typing_start" | "typing_stop" | "message";
 
@@ -39,7 +46,6 @@ type SchedulerArgs = {
   fallbackReply: string;
   fragmentedReply?: FragmentedReply;
   emotion?: string;
-  onEvent?: (eventName: "chat_seen" | "typing_start" | "typing_stop" | "fragment_message", payload: Record<string, unknown>) => void;
 };
 
 const DELIVERY_TTL_SEC = 90;
@@ -305,39 +311,95 @@ export async function scheduleHumanDelivery(args: SchedulerArgs): Promise<HumanD
       const st = activeStates.get(args.sessionId);
       if (!st || st.status === "cancelled" || st.paused) return;
       st.currentStep = i;
-      if (step.type === "typing_start") {
-        st.typingActive = true;
-        logStructured("[TYPING_STARTED]", { session_id: args.sessionId, step: i });
-        args.onEvent?.("typing_start", { session_id: args.sessionId, request_id: args.requestId, at: Date.now() });
-      } else if (step.type === "typing_stop") {
-        st.typingActive = false;
-        logStructured("[TYPING_STOPPED]", { session_id: args.sessionId, step: i });
-        args.onEvent?.("typing_stop", { session_id: args.sessionId, request_id: args.requestId, at: Date.now() });
-      } else if (step.type === "seen") {
-        args.onEvent?.("chat_seen", { session_id: args.sessionId, request_id: args.requestId, at: Date.now() });
-      } else if (step.type === "message") {
-        st.pendingFragments = Math.max(0, st.pendingFragments - 1);
-        logStructured("[FRAGMENT_SENT]", {
-          session_id: args.sessionId,
-          step: i,
-          pending: st.pendingFragments,
-          len: String(step.payload?.content ?? "").length,
-        });
-        args.onEvent?.("fragment_message", {
+      let hadError = false;
+      try {
+        if (step.type === "typing_start") {
+          st.typingActive = true;
+          logStructured("[TYPING_STARTED]", { session_id: args.sessionId, step: i });
+          await broadcastTypingStart({
+            session_id: args.sessionId,
+            message_id: args.requestId,
+            fragment_index: Number(step.payload?.fragmentIndex ?? 0),
+            delay_ms: step.executeAt,
+            meta: { emotion, step: i },
+          });
+        } else if (step.type === "typing_stop") {
+          st.typingActive = false;
+          logStructured("[TYPING_STOPPED]", { session_id: args.sessionId, step: i });
+          await broadcastTypingStop({
+            session_id: args.sessionId,
+            message_id: args.requestId,
+            fragment_index: Number(step.payload?.fragmentIndex ?? 0),
+            delay_ms: step.executeAt,
+            meta: { emotion, step: i },
+          });
+        } else if (step.type === "seen") {
+          await broadcastMessageRead({
+            session_id: args.sessionId,
+            message_id: args.requestId,
+            delay_ms: step.executeAt,
+            meta: { emotion, step: i },
+          });
+        } else if (step.type === "message") {
+          st.pendingFragments = Math.max(0, st.pendingFragments - 1);
+          logStructured("[FRAGMENT_SENT]", {
+            session_id: args.sessionId,
+            step: i,
+            pending: st.pendingFragments,
+            len: String(step.payload?.content ?? "").length,
+          });
+          await broadcastFragment({
+            session_id: args.sessionId,
+            message_id: args.requestId,
+            fragment_index: Number(step.payload?.fragmentIndex ?? 0),
+            fragment: String(step.payload?.content ?? ""),
+            delay_ms: step.executeAt,
+            meta: { emotion, step: i, pending: st.pendingFragments },
+          });
+        }
+
+        if (i === plan.steps.length - 1) {
+          st.status = "completed";
+          st.typingActive = false;
+          await broadcastMessageComplete({
+            session_id: args.sessionId,
+            message_id: args.requestId,
+            delay_ms: plan.totalDurationMs,
+            meta: {
+              emotion,
+              fragmented: plan.fragmented,
+              totalDurationMs: plan.totalDurationMs,
+              humanDeliveryScore: plan.humanDeliveryScore,
+            },
+          });
+          await saveState(st);
+          logStructured("[DELIVERY_COMPLETED]", { session_id: args.sessionId, request_id: args.requestId });
+        } else {
+          await saveState(st);
+        }
+      } catch (e) {
+        hadError = true;
+        logStructured("[REALTIME_DELIVERY_ERROR]", {
           session_id: args.sessionId,
           request_id: args.requestId,
-          content: String(step.payload?.content ?? ""),
-          fragment_index: Number(step.payload?.fragmentIndex ?? 0),
-          at: Date.now(),
+          step: i,
+          error: e instanceof Error ? e.message : String(e),
         });
-      }
-      if (i === plan.steps.length - 1) {
-        st.status = "completed";
-        st.typingActive = false;
-        await saveState(st);
-        logStructured("[DELIVERY_COMPLETED]", { session_id: args.sessionId, request_id: args.requestId });
-      } else {
-        await saveState(st);
+      } finally {
+        // Watchdog: ensure typing indicator never stays stuck on UI.
+        if (hadError && st.typingActive) {
+          st.typingActive = false;
+          try {
+            await broadcastTypingStop({
+              session_id: args.sessionId,
+              message_id: args.requestId,
+              delay_ms: step.executeAt,
+              meta: { emotion, step: i, watchdog: true },
+            });
+          } catch {
+            /* ignore */
+          }
+        }
       }
     }, step.executeAt);
     timers.push(timeout);
