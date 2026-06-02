@@ -134,6 +134,7 @@ import { buildHumanBehaviorPlan } from "@/lib/ai/humanBehaviorEngine";
 import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
+import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
@@ -248,6 +249,7 @@ export type GenerateAIReplyResult = {
   emotionalSupervisorInsights?: EmotionalSupervisorInsights;
   personalitySupervisorInsights?: PersonalitySupervisorInsights;
   socialSupervisorInsights?: SocialSupervisorInsights;
+  fragmentedReply?: FragmentedReply;
 };
 
 export async function generateAIReply(args: {
@@ -1875,6 +1877,14 @@ export async function generateAIReply(args: {
     }
   }
 
+  const fragmentedReply = buildHumanFragments({
+    reply: cleaned,
+    userMessage: message,
+    emotion: String((args.conversationState as any)?.emotionalContinuityState?.active?.label ?? "neutral"),
+    socialOnlyMode: socialOnly,
+    seed: `${microSeed}|fragment`,
+  });
+
   console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
   const deliveryPlan = buildHumanDeliveryPlan({ replyText: cleaned });
   console.log("[TRACE]", "delivery_simulation_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, ...deliveryPlan });
@@ -2017,6 +2027,7 @@ export async function generateAIReply(args: {
         replyOwnership: undefined,
           replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
         socialOnlyMode: socialOnly,
+        fragmentedReply,
         liveOrchestrator: orchestrator.liveState,
         supervisorInsights: salesDecision.insights,
         emotionalSupervisorInsights: emotionalIntel.supervisor,
@@ -2044,6 +2055,7 @@ export async function generateAIReply(args: {
     replyOwnership,
     replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
     socialOnlyMode: socialOnly,
+    fragmentedReply,
     liveOrchestrator: orchestrator.liveState,
     conversationStateNext: args.conversationState,
     supervisorInsights: salesDecision.insights,

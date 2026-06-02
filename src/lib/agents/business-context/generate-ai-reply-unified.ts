@@ -71,6 +71,7 @@ function mapRailwayResponse(
 
   return {
     reply,
+    fragmentedReply: payload.fragmentedReply as GenerateAIReplyResult["fragmentedReply"],
     socialOnlyMode: payload.socialOnlyMode as GenerateAIReplyResult["socialOnlyMode"],
     replyTransformationChain: payload.replyTransformationChain as GenerateAIReplyResult["replyTransformationChain"],
     supervisorInsights: payload.supervisorInsights as GenerateAIReplyResult["supervisorInsights"],

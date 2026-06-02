@@ -335,6 +335,7 @@ export async function runFullSellerReplyOrchestration(
 
     const payload: Record<string, unknown> = {
       reply: gen.reply,
+      fragmentedReply: (gen as any)?.fragmentedReply,
       socialOnlyMode: gen.socialOnlyMode,
       replyTransformationChain: sanitizeReplyTransformationChain(
         Array.isArray(gen.replyTransformationChain) ? (gen.replyTransformationChain as any[]) : [],
