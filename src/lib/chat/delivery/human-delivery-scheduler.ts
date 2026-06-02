@@ -46,6 +46,7 @@ type SchedulerArgs = {
   fallbackReply: string;
   fragmentedReply?: FragmentedReply;
   emotion?: string;
+  personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
 };
 
 const DELIVERY_TTL_SEC = 90;
@@ -116,6 +117,7 @@ export function computeTypingDuration(args: {
   difficulty?: "low" | "medium" | "high";
   fragmentCount: number;
   seed: string;
+  typingSpeed?: number;
 }): number {
   const len = String(args.fragmentText ?? "").trim().length;
   const e = normEmotion(args.emotion);
@@ -126,7 +128,8 @@ export function computeTypingDuration(args: {
   if (e === "frustrated") base -= 300;
   if (e === "hesitant") base += 500;
   if (e === "playful" && len < 16) base -= 180;
-  return clamp(jitter(base, `${args.seed}|typing-duration|${len}`), 400, 6500);
+  const speed = typeof args.typingSpeed === "number" && Number.isFinite(args.typingSpeed) ? args.typingSpeed : 1;
+  return clamp(jitter(base / clamp(speed, 0.7, 1.3), `${args.seed}|typing-duration|${len}`), 400, 6500);
 }
 
 export function simulateHumanReading(args: { userMessage: string; emotion?: string; seed: string }): number {
@@ -146,6 +149,7 @@ export function computeFragmentDeliveryPlan(args: {
   fragments: { content: string; typingDurationMs?: number; delayMs?: number }[];
   emotion?: string;
   seed: string;
+  personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
 }): ScheduledDeliveryStep[] {
   const steps: ScheduledDeliveryStep[] = [];
   let cursor = 0;
@@ -154,7 +158,11 @@ export function computeFragmentDeliveryPlan(args: {
   steps.push({ type: "seen", executeAt: cursor });
   logStructured("[SEEN_SCHEDULED]", { seenDelayMs: seenDelay });
 
-  cursor += simulateHumanThinking({ emotion: args.emotion, seed: args.seed });
+  let think = simulateHumanThinking({ emotion: args.emotion, seed: args.seed });
+  const delayStyle = args.personality?.reactionDelayStyle ?? "normal";
+  if (delayStyle === "fast") think = Math.max(450, Math.round(think * 0.78));
+  if (delayStyle === "slow") think = Math.min(3200, Math.round(think * 1.22));
+  cursor += think;
 
   for (let i = 0; i < args.fragments.length; i++) {
     const f = args.fragments[i]!;
@@ -171,6 +179,7 @@ export function computeFragmentDeliveryPlan(args: {
             fragmentCount: args.fragments.length,
             difficulty: f.content.length > 110 ? "high" : f.content.length > 45 ? "medium" : "low",
             seed: `${args.seed}|frag-${i}`,
+            typingSpeed: args.personality?.typingSpeed,
           }),
       ),
       400,
@@ -198,6 +207,7 @@ export function buildDeliveryTimeline(args: {
   fragmentedReply?: FragmentedReply;
   emotion?: string;
   seed: string;
+  personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
 }): HumanDeliveryPlan {
   const fromFragments =
     args.fragmentedReply?.fragments?.length && args.fragmentedReply.fragmented
@@ -209,7 +219,7 @@ export function buildDeliveryTimeline(args: {
       : [{ content: String(args.fallbackReply ?? "").trim() }];
 
   const fragments = fromFragments.filter((x) => x.content.length > 0).slice(0, 3);
-  const steps = computeFragmentDeliveryPlan({ fragments, emotion: args.emotion, seed: args.seed });
+  const steps = computeFragmentDeliveryPlan({ fragments, emotion: args.emotion, seed: args.seed, personality: args.personality });
   const rawTotal = steps.length ? Math.max(...steps.map((s) => s.executeAt)) : 0;
   const totalDurationMs = clamp(rawTotal, 1000, 25_000);
 
@@ -286,6 +296,7 @@ export async function scheduleHumanDelivery(args: SchedulerArgs): Promise<HumanD
     fragmentedReply: args.fragmentedReply,
     emotion,
     seed,
+    personality: args.personality,
   });
 
   const runtime: RuntimeDeliveryState = {

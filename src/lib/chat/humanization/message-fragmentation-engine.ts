@@ -11,6 +11,13 @@ export type FragmentedReply = {
   fragmented: boolean;
 };
 
+export type FragmentationPersonalityHints = {
+  fragmentationStyle?: "rare" | "normal" | "often";
+  emojiFrequency?: number;
+  averageSentenceLength?: number;
+  reactionDelayStyle?: "fast" | "normal" | "slow";
+};
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -45,6 +52,7 @@ export function shouldFragmentReply(args: {
   userMessage: string;
   emotion?: string;
   socialOnlyMode?: boolean;
+  personality?: FragmentationPersonalityHints;
 }): boolean {
   const reply = String(args.reply ?? "").trim();
   if (!reply || reply.length < 18) return false;
@@ -52,6 +60,12 @@ export function shouldFragmentReply(args: {
   if (reply.split(/\s+/).length < 7) return false;
   const e = String(args.emotion ?? "").toLowerCase();
   if (e === "cold") return false;
+  const style = args.personality?.fragmentationStyle ?? "normal";
+  if (style === "rare") return reply.length > 140;
+  if (style === "often") {
+    // Allow fragmentation more often for WhatsApp-y agents.
+    if (reply.length >= 60) return true;
+  }
   if (args.socialOnlyMode) return true;
   return /\b(oui|franchement|je vois|attends|je regarde|dommage|bizarre)\b/i.test(reply) || reply.length > 90;
 }
@@ -140,6 +154,7 @@ export function buildHumanFragments(args: {
   emotion?: string;
   socialOnlyMode?: boolean;
   seed: string;
+  personality?: FragmentationPersonalityHints;
 }): FragmentedReply {
   if (!shouldFragmentReply(args)) {
     console.log("[FRAGMENT_SKIPPED]", { reason: "rules", len: String(args.reply ?? "").trim().length });

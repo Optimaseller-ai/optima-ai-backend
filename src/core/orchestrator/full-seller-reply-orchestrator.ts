@@ -36,6 +36,12 @@ import { cancelPendingDelivery, scheduleHumanDelivery } from "@/lib/chat/deliver
 import { loadHumanMemory, saveHumanMemory } from "@/lib/redis/human-memory-store";
 import { buildHumanContext, updateHumanMemory } from "@/lib/chat/memory/human-memory-engine";
 import {
+  buildAgentPersonalityProfile,
+  buildPersistentAgentIdentity,
+  type PersonalityState,
+} from "@/lib/chat/personality/personality-variation-engine";
+import { loadPersonalityState, savePersonalityState } from "@/lib/redis/personality-state-store";
+import {
   buildEmotionalContext,
   updateEmotionalContinuity,
 } from "@/lib/chat/emotion/emotional-continuity-engine";
@@ -165,6 +171,7 @@ export async function runFullSellerReplyOrchestration(
     const redisSession = await loadConversationSession(input.session_id);
     const humanMemoryState = await loadHumanMemory(input.session_id);
     const emotionalState = await loadEmotionalState(input.session_id);
+    const personalityState = await loadPersonalityState(input.session_id);
     const nextEmotionalState = updateEmotionalContinuity({
       previous: emotionalState ?? undefined,
       userMessage: input.message,
@@ -214,6 +221,42 @@ export async function runFullSellerReplyOrchestration(
         trust: humanMemoryState.emotionalState.trust01,
       });
     }
+
+    // Persistent agent personality profile (stable identity across turns).
+    const nextPersonalityProfile = buildAgentPersonalityProfile({
+      sessionId: input.session_id,
+      agentName: input.agent_name,
+      agentId: input.agent_id,
+      personaKey: input.persona_key ?? null,
+      previous: personalityState?.profile ?? null,
+    });
+    const repairedPersonalityState: PersonalityState = {
+      profile: nextPersonalityProfile,
+      lastConsistencyScore: nextPersonalityProfile.personalityConsistencyScore,
+      lastDriftReasons: [],
+      updatedAt: Date.now(),
+    };
+    logStructured("[PERSONALITY_PROFILE]", {
+      session_id: input.session_id,
+      agentSignature: nextPersonalityProfile.agentSignature,
+      dominantTraits: nextPersonalityProfile.dominantTraits,
+      emojiFrequency: nextPersonalityProfile.emojiFrequency,
+      questionRate: nextPersonalityProfile.questionRate,
+      humorLevel: nextPersonalityProfile.humorLevel,
+      warmthLevel: nextPersonalityProfile.warmthLevel,
+      salesPressure: nextPersonalityProfile.salesPressure,
+      typingSpeed: nextPersonalityProfile.typingSpeed,
+      fragmentationStyle: nextPersonalityProfile.fragmentationStyle,
+      reactionDelayStyle: nextPersonalityProfile.reactionDelayStyle,
+      personalityConsistencyScore: nextPersonalityProfile.personalityConsistencyScore,
+    });
+    const identityText = buildPersistentAgentIdentity({ profile: nextPersonalityProfile, lang: "fr" });
+    logStructured("[HUMAN_STYLE_SELECTED]", { session_id: input.session_id, identity: identityText.slice(0, 280) });
+    (input.conversation_state as any) = {
+      ...(input.conversation_state ?? {}),
+      agentPersonalityProfile: nextPersonalityProfile,
+      agentPersonalityIdentity: identityText,
+    };
     console.log("[REDIS_BEFORE]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -342,6 +385,7 @@ export async function runFullSellerReplyOrchestration(
       fallbackReply: String(gen.reply ?? ""),
       fragmentedReply: (gen as any)?.fragmentedReply,
       emotion: String((nextEmotionalState as any)?.active?.label ?? ""),
+      personality: nextPersonalityProfile,
     });
     timingScheduled.push("scheduled_reply");
 
@@ -404,6 +448,7 @@ export async function runFullSellerReplyOrchestration(
     }
     await saveHumanMemory(input.session_id, nextHumanMemory);
     await saveEmotionalState(input.session_id, nextEmotionalState);
+    await savePersonalityState(input.session_id, repairedPersonalityState);
     console.log("[REDIS_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,

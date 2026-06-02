@@ -135,6 +135,7 @@ import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder"
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
+import { generatePersonalityInstructions } from "@/lib/chat/personality/personality-variation-engine";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
@@ -1389,6 +1390,40 @@ export async function generateAIReply(args: {
     applyCommercialAdaptationToHumanPlan(humanPlan, commercialAdapt);
     humanPlan.preGenerationDirectives.push(...commercialAdaptRun.directives.slice(0, 6));
   }
+
+  // Persistent agent personality variation (unique, stable identity).
+  const agentProfile = (args.conversationState as any)?.agentPersonalityProfile as any;
+  if (agentProfile && typeof agentProfile === "object") {
+    const instr = generatePersonalityInstructions({ profile: agentProfile, lang: langForBrain as any });
+    if (instr) {
+      humanPlan.preGenerationDirectives.push(instr);
+      logStructured("[PERSONALITY_APPLIED]", {
+        request_id: args.replyTurn?.request_id,
+        agentSignature: String(agentProfile.agentSignature ?? ""),
+        personalityConsistencyScore: Number(agentProfile.personalityConsistencyScore ?? 0),
+      });
+      logStructured("[PERSONALITY_SCORE]", {
+        request_id: args.replyTurn?.request_id,
+        personalityConsistencyScore: Number(agentProfile.personalityConsistencyScore ?? 0),
+      });
+      logStructured("[EMOJI_STYLE]", {
+        request_id: args.replyTurn?.request_id,
+        emojiFrequency: Number(agentProfile.emojiFrequency ?? 0),
+      });
+      logStructured("[QUESTION_RATE]", {
+        request_id: args.replyTurn?.request_id,
+        questionRate: Number(agentProfile.questionRate ?? 0),
+      });
+      logStructured("[HUMOR_LEVEL]", {
+        request_id: args.replyTurn?.request_id,
+        humorLevel: Number(agentProfile.humorLevel ?? 0),
+      });
+      logStructured("[SALES_STYLE]", {
+        request_id: args.replyTurn?.request_id,
+        salesPressure: Number(agentProfile.salesPressure ?? 0),
+      });
+    }
+  }
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[QUESTION_PROBABILITY]", {
@@ -1883,6 +1918,7 @@ export async function generateAIReply(args: {
     emotion: String((args.conversationState as any)?.emotionalContinuityState?.active?.label ?? "neutral"),
     socialOnlyMode: socialOnly,
     seed: `${microSeed}|fragment`,
+    personality: (args.conversationState as any)?.agentPersonalityProfile,
   });
 
   console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
