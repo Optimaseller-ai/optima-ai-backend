@@ -32,6 +32,7 @@ import { captureRelationshipMemory, restoreRelationshipMemory } from "@/lib/redi
 import { captureFollowupMemory } from "@/lib/redis/followup-memory";
 import { filterImportantHistory, filterImportantMemoryLines } from "@/lib/redis/memory-importance-score";
 import { saveLiveConversationState } from "@/lib/redis/live-conversation-state";
+import { cancelPendingDelivery, scheduleHumanDelivery } from "@/lib/chat/delivery/human-delivery-scheduler";
 import { loadHumanMemory, saveHumanMemory } from "@/lib/redis/human-memory-store";
 import { buildHumanContext, updateHumanMemory } from "@/lib/chat/memory/human-memory-engine";
 import {
@@ -114,6 +115,7 @@ export async function runFullSellerReplyOrchestration(
   const timingScheduled: TimingJobKind[] = [];
 
   try {
+    await cancelPendingDelivery(input.session_id);
     console.log("[TRACE]", "generateAIReply_start", {
       ms: Date.now() - t0,
       session_id: input.session_id,
@@ -333,9 +335,20 @@ export async function runFullSellerReplyOrchestration(
     const liveRaw = gen.liveOrchestrator;
     const liveSafe = liveRaw ? jsonSafe(liveRaw, {}) : undefined;
 
+    const humanDeliveryPlan = await scheduleHumanDelivery({
+      sessionId: input.session_id,
+      requestId: input.request_id,
+      userMessage: input.message,
+      fallbackReply: String(gen.reply ?? ""),
+      fragmentedReply: (gen as any)?.fragmentedReply,
+      emotion: String((nextEmotionalState as any)?.active?.label ?? ""),
+    });
+    timingScheduled.push("scheduled_reply");
+
     const payload: Record<string, unknown> = {
       reply: gen.reply,
       fragmentedReply: (gen as any)?.fragmentedReply,
+      humanDeliveryPlan,
       socialOnlyMode: gen.socialOnlyMode,
       replyTransformationChain: sanitizeReplyTransformationChain(
         Array.isArray(gen.replyTransformationChain) ? (gen.replyTransformationChain as any[]) : [],
