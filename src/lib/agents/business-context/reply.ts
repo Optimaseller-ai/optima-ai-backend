@@ -134,9 +134,10 @@ import { buildHumanBehaviorPlan } from "@/lib/ai/humanBehaviorEngine";
 import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
 import {
-  EMOJI_ONLY_REGEN_HINT,
-  isEmojiOnlyReply,
-} from "@/lib/ai/validators/emoji-only-reply-validator";
+  ensureValidHumanReply,
+  ensureValidHumanReplySync,
+} from "@/lib/chat/validation/ensure-valid-human-reply";
+import { HUMAN_REPLY_REGEN_HINT_FR } from "@/lib/chat/validation/human-reply-validator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
 import { generatePersonalityInstructions } from "@/lib/chat/personality/personality-variation-engine";
@@ -946,7 +947,15 @@ export async function generateAIReply(args: {
       fallback: () => rawQuick,
       run: () => postProcessPremiumReply(rawQuick, { ...postOpts, socialOnly: false }),
     });
-    const polished = polishedRun.result ?? rawQuick;
+    const polishedRaw = polishedRun.result ?? rawQuick;
+    const polishedEnsured = ensureValidHumanReplySync({
+      reply: polishedRaw,
+      userMessage: message,
+      requestId: args.replyTurn?.request_id,
+      lang: langForSocial,
+      socialOnly: true,
+    });
+    const polished = polishedEnsured.reply;
     for (const log of transformLogs) {
       dbg?.recordStep({
         step: "humanization",
@@ -1027,7 +1036,15 @@ export async function generateAIReply(args: {
       fallback: () => raw,
       run: () => postProcessPremiumReply(raw, postOpts),
     });
-    const polishedSocial = polishedRun.result ?? raw;
+    const polishedSocialRaw = polishedRun.result ?? raw;
+    const polishedSocialEnsured = ensureValidHumanReplySync({
+      reply: polishedSocialRaw,
+      userMessage: message,
+      requestId: args.replyTurn?.request_id,
+      lang: langForSocial,
+      socialOnly: true,
+    });
+    const polishedSocial = polishedSocialEnsured.reply;
     if (replyManager) {
       replyManager.submitCandidate({
         reply: polishedSocial,
@@ -1748,40 +1765,6 @@ export async function generateAIReply(args: {
 
       console.log("[TRACE]", "validator_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt });
       let decision = validateHumanReplyLength(raw);
-      if (isEmojiOnlyReply(raw)) {
-        logStructured("[EMOJI_ONLY_BLOCKED]", {
-          request_id: args.replyTurn?.request_id,
-          reply: raw.slice(0, 80),
-        });
-        const emojiRegenBundle = buildDynamicPromptBundle({
-          agentName: sellerProfile.agentName,
-          businessName: sellerProfile.businessName,
-          message,
-          historyText: `${historyText}\n\n${EMOJI_ONLY_REGEN_HINT}`,
-          productsText: promptCtx.productsText,
-          chunksText: promptCtx.chunksText,
-          learningFacts: memFacts.facts,
-          emotion: emotionStage,
-          sales: salesStage,
-          personality: personalityStage,
-          human: humanPlan,
-          attempt: 2,
-          businessContextBlock,
-          strictGroundingBlock,
-        });
-        const emojiRegenPayload = prepareOpenRouterPayload(emojiRegenBundle.systemPrompt, emojiRegenBundle.userPrompt, {
-          userMessageLen: message.length,
-        });
-        raw = await openRouterChatWithOneRetry(
-          Object.assign(emojiRegenPayload, { model: modelChoice.model, maxTokensOverride: 180 }),
-        );
-        logStructured("[SHORT_REPLY_REGENERATED]", {
-          request_id: args.replyTurn?.request_id,
-          reason: "emoji_only",
-          rawLen: raw.length,
-        });
-        decision = validateHumanReplyLength(raw);
-      }
       console.log("[TRACE]", "validator_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt, ok: decision.ok });
       console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
       if (!decision.ok) {
@@ -2096,6 +2079,43 @@ export async function generateAIReply(args: {
       reason: greetingGuard.reason,
     });
   }
+
+  const humanEnsured = await ensureValidHumanReply({
+    reply: cleaned,
+    userMessage: message,
+    requestId: args.replyTurn?.request_id,
+    lang: langForBrain as "fr" | "en" | "es",
+    socialOnly,
+    regenOnce:
+      llmRun.ok && !socialOnly
+        ? async () => {
+            const regenBundle = buildDynamicPromptBundle({
+              agentName: sellerProfile.agentName,
+              businessName: sellerProfile.businessName,
+              message,
+              historyText: `${historyText}\n\n${HUMAN_REPLY_REGEN_HINT_FR}`,
+              productsText: promptCtx.productsText,
+              chunksText: promptCtx.chunksText,
+              learningFacts: memFacts.facts,
+              emotion: emotionStage,
+              sales: salesStage,
+              personality: personalityStage,
+              human: humanPlan,
+              attempt: 3,
+              businessContextBlock,
+              strictGroundingBlock,
+            });
+            const regenPayload = prepareOpenRouterPayload(regenBundle.systemPrompt, regenBundle.userPrompt, {
+              userMessageLen: message.length,
+            });
+            const regenRaw = await openRouterChatWithOneRetry(
+              Object.assign(regenPayload, { model: modelChoice.model, maxTokensOverride: 180 }),
+            );
+            return stripAiSpeakerLabels(postProcessPremiumReply(regenRaw, postOpts), sellerProfile.agentName);
+          }
+        : undefined,
+  });
+  cleaned = humanEnsured.reply;
 
   const fragmentedReply = buildHumanFragments({
     reply: cleaned,

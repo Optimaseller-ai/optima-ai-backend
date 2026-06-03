@@ -1,7 +1,10 @@
 import "server-only";
 
+import { buildSocialHumanFallback } from "@/lib/chat/humanization/social-fallbacks";
+import { isValidHumanReply } from "@/lib/chat/validation/human-reply-validator";
 import { ensureHumanFallbackReply, type ContextualFallbackInput } from "./contextual-fallbacks";
 import { isInvalidCollapsedReply } from "./reply-transformation-chain";
+import { logStructured } from "@/lib/logging/structured-log";
 import type { ConversationPipelineRuntimeSnapshot } from "./pipeline-types";
 import { jsonSafe } from "./json-safe";
 
@@ -43,9 +46,19 @@ export function finalizeChatSendResponse(input: FinalizeChatResponseInput): Fina
     const before = reply;
     reply = ensureHumanFallbackReply(reply, input.fallbackInput);
     if (!before || before !== reply) usedReplyFallback = true;
+    if (!isValidHumanReply(reply)) {
+      reply = buildSocialHumanFallback({
+        seed: input.fallbackInput.userMessage,
+        lang: input.fallbackInput.lang,
+        userMessage: input.fallbackInput.userMessage,
+      });
+      usedReplyFallback = true;
+      logStructured("[FALLBACK_HUMAN_REPLY]", { phase: "response_finalizer" });
+    }
   }
 
-  const replyValid = !isInvalidCollapsedReply(reply) && reply.length > 0;
+  const replyValid =
+    !isInvalidCollapsedReply(reply) && reply.length > 0 && isValidHumanReply(reply);
 
   const success = !fatal && replyValid && !hasFatalStep;
   const error = success ? null : fatal || (hasFatalStep ? "PIPELINE_FATAL" : "INVALID_REPLY");

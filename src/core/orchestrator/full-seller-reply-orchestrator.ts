@@ -48,6 +48,10 @@ import {
 import { loadConversationFatigueState, saveConversationFatigueState } from "@/lib/redis/conversation-fatigue-store";
 import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
 import {
+  canPersistAssistantReply,
+  ensureValidHumanReplySync,
+} from "@/lib/chat/validation/ensure-valid-human-reply";
+import {
   applyIntroSessionResetIfNeeded,
   detectFirstTurn,
 } from "@/lib/chat/runtime/intro-session-state";
@@ -464,8 +468,17 @@ export async function runFullSellerReplyOrchestration(
     });
     timingScheduled.push("scheduled_reply");
 
+    const humanEnsured = ensureValidHumanReplySync({
+      reply: replyForClient,
+      userMessage: input.message,
+      requestId: input.request_id,
+      socialOnly: gen.socialOnlyMode === true,
+    });
+    const replyForClient = humanEnsured.reply;
+    (gen as { reply: string }).reply = replyForClient;
+
     const payload: Record<string, unknown> = {
-      reply: gen.reply,
+      reply: replyForClient,
       fragmentedReply: (gen as any)?.fragmentedReply,
       humanDeliveryPlan,
       socialOnlyMode: gen.socialOnlyMode,
@@ -482,52 +495,84 @@ export async function runFullSellerReplyOrchestration(
     };
     const conversationStateNext = (gen as any)?.conversationStateNext as Record<string, unknown> | undefined;
     const finalState = (conversationStateNext ?? sanitizedConversationState) as any;
-    if (String(gen.reply ?? "").trim() && !isFirstTurnSession) {
+    const persistReply = replyForClient.trim();
+    const mayPersistAssistant = persistReply.length > 0 && canPersistAssistantReply(persistReply);
+
+    if (mayPersistAssistant && !isFirstTurnSession) {
       finalState.intro_done = true;
       finalState.conversationSocialV2 = {
         ...(finalState.conversationSocialV2 ?? {}),
         welcomeDelivered: true,
       };
     }
-    finalState.followupMemory = captureFollowupMemory(String(gen.reply ?? ""), finalState);
-    finalState.relationshipMemory = captureRelationshipMemory(finalState);
+    if (mayPersistAssistant) {
+      finalState.followupMemory = captureFollowupMemory(persistReply, finalState);
+      finalState.relationshipMemory = captureRelationshipMemory(finalState);
+    }
     const emotionPersist = captureEmotionalPersistence(finalState);
     if (emotionPersist) {
       finalState.emotionPersistence = emotionPersist;
     }
-    const compactGated = ensureFinalConversationHistory(
-      filterImportantHistory([...mergedHistory, { role: "assistant", content: String(gen.reply ?? "") }], 18),
-    );
-    const compactTurns = sanitizeConversationHistory(fromLlmHistory(compactGated.history)).history;
-    validateConversationHistory(compactTurns);
-    const compactSanitized = sanitizeHistoryForLlm(toLlmHistory(compactTurns));
-    await saveConversationSession({
-      sessionId: input.session_id,
-      state: finalState,
-      history: toLlmHistory(compactTurns),
-    });
-    const nextHumanMemory = updateHumanMemory({
-      previous: humanMemoryState ?? undefined,
-      userMessage: input.message,
-      assistantReply: String(gen.reply ?? ""),
-      turnsTogether: Number(finalState?.stats?.turn_count ?? 0),
-    });
-    const humanContextPreview = buildHumanContext({ memoryState: nextHumanMemory, maxItems: 4 });
-    logStructured("[HUMAN_MEMORY_EXTRACTED]", {
-      session_id: input.session_id,
-      extracted_count: nextHumanMemory.memories.length,
-      context_preview: humanContextPreview,
-    });
-    for (const m of nextHumanMemory.memories.slice(0, 8)) {
-      logStructured("[MEMORY_IMPORTANCE_SCORE]", {
+
+    let historyToSave = mergedHistory;
+    if (mayPersistAssistant) {
+      const compactGated = ensureFinalConversationHistory(
+        filterImportantHistory([...mergedHistory, { role: "assistant", content: persistReply }], 18),
+      );
+      const compactTurns = sanitizeConversationHistory(fromLlmHistory(compactGated.history)).history;
+      validateConversationHistory(compactTurns);
+      historyToSave = toLlmHistory(compactTurns);
+      await saveConversationSession({
+        sessionId: input.session_id,
+        state: finalState,
+        history: historyToSave,
+      });
+    } else {
+      logStructured("[INVALID_HISTORY_SAVE_BLOCKED]", {
         session_id: input.session_id,
-        category: m.category,
-        content: m.content,
-        importance: m.importanceScore,
-        emotionalWeight: m.emotionalWeight,
+        request_id: input.request_id,
+        reason: humanEnsured.validation.reason,
+        score: humanEnsured.validation.humanReplyScore,
+        replyPreview: persistReply.slice(0, 80),
+      });
+      await saveConversationSession({
+        sessionId: input.session_id,
+        state: finalState,
+        history: mergedHistory,
       });
     }
-    await saveHumanMemory(input.session_id, nextHumanMemory);
+
+    if (mayPersistAssistant) {
+      const nextHumanMemory = updateHumanMemory({
+        previous: humanMemoryState ?? undefined,
+        userMessage: input.message,
+        assistantReply: persistReply,
+        turnsTogether: Number(finalState?.stats?.turn_count ?? 0),
+      });
+      const humanContextPreview = buildHumanContext({ memoryState: nextHumanMemory, maxItems: 4 });
+      logStructured("[HUMAN_MEMORY_EXTRACTED]", {
+        session_id: input.session_id,
+        extracted_count: nextHumanMemory.memories.length,
+        context_preview: humanContextPreview,
+      });
+      for (const m of nextHumanMemory.memories.slice(0, 8)) {
+        logStructured("[MEMORY_IMPORTANCE_SCORE]", {
+          session_id: input.session_id,
+          category: m.category,
+          content: m.content,
+          importance: m.importanceScore,
+          emotionalWeight: m.emotionalWeight,
+        });
+      }
+      await saveHumanMemory(input.session_id, nextHumanMemory);
+    } else {
+      logStructured("[INVALID_HISTORY_SAVE_BLOCKED]", {
+        session_id: input.session_id,
+        request_id: input.request_id,
+        scope: "human_memory_skipped",
+        reason: humanEnsured.validation.reason,
+      });
+    }
     await saveEmotionalState(input.session_id, nextEmotionalState);
     await savePersonalityState(input.session_id, repairedPersonalityState);
     await saveConversationFatigueState(input.session_id, nextFatigueState);
@@ -539,8 +584,8 @@ export async function runFullSellerReplyOrchestration(
     console.log("[REDIS_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,
-      count: compactTurns.length,
-      fingerprints: compactTurns.slice(-6).map((t) => t.fingerprint),
+      count: historyToSave.length,
+      assistantPersisted: mayPersistAssistant,
     });
     await saveLiveConversationState(input.session_id, {
       typingState: { active: false, requestId: input.request_id, updatedAt: Date.now() },
@@ -555,7 +600,8 @@ export async function runFullSellerReplyOrchestration(
     logStructured("[MEMORY_COMPRESSED]", {
       session_id: input.session_id,
       request_id: input.request_id,
-      compactHistory: compactGated.history.length,
+      compactHistory: historyToSave.length,
+      assistantPersisted: mayPersistAssistant,
       memory: finalState.memory?.length ?? 0,
     });
 
@@ -576,7 +622,7 @@ export async function runFullSellerReplyOrchestration(
 
     return {
       ok: true,
-      reply: String(gen.reply ?? ""),
+      reply: replyForClient,
       request_id: input.request_id,
       source: "generate_ai_reply",
       timing_scheduled: timingScheduled,
