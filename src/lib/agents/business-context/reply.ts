@@ -133,6 +133,10 @@ import { inferDynamicEnergy } from "@/lib/ai/dynamicEnergyEngine";
 import { buildHumanBehaviorPlan } from "@/lib/ai/humanBehaviorEngine";
 import { buildDynamicPromptBundle } from "@/lib/ai/prompts/dynamicPromptBuilder";
 import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidator";
+import {
+  EMOJI_ONLY_REGEN_HINT,
+  isEmojiOnlyReply,
+} from "@/lib/ai/validators/emoji-only-reply-validator";
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
 import { generatePersonalityInstructions } from "@/lib/chat/personality/personality-variation-engine";
@@ -1744,6 +1748,40 @@ export async function generateAIReply(args: {
 
       console.log("[TRACE]", "validator_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt });
       let decision = validateHumanReplyLength(raw);
+      if (isEmojiOnlyReply(raw)) {
+        logStructured("[EMOJI_ONLY_BLOCKED]", {
+          request_id: args.replyTurn?.request_id,
+          reply: raw.slice(0, 80),
+        });
+        const emojiRegenBundle = buildDynamicPromptBundle({
+          agentName: sellerProfile.agentName,
+          businessName: sellerProfile.businessName,
+          message,
+          historyText: `${historyText}\n\n${EMOJI_ONLY_REGEN_HINT}`,
+          productsText: promptCtx.productsText,
+          chunksText: promptCtx.chunksText,
+          learningFacts: memFacts.facts,
+          emotion: emotionStage,
+          sales: salesStage,
+          personality: personalityStage,
+          human: humanPlan,
+          attempt: 2,
+          businessContextBlock,
+          strictGroundingBlock,
+        });
+        const emojiRegenPayload = prepareOpenRouterPayload(emojiRegenBundle.systemPrompt, emojiRegenBundle.userPrompt, {
+          userMessageLen: message.length,
+        });
+        raw = await openRouterChatWithOneRetry(
+          Object.assign(emojiRegenPayload, { model: modelChoice.model, maxTokensOverride: 180 }),
+        );
+        logStructured("[SHORT_REPLY_REGENERATED]", {
+          request_id: args.replyTurn?.request_id,
+          reason: "emoji_only",
+          rawLen: raw.length,
+        });
+        decision = validateHumanReplyLength(raw);
+      }
       console.log("[TRACE]", "validator_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id, attempt, ok: decision.ok });
       console.log("[HUMANIZATION_SCORE]", { request_id: args.replyTurn?.request_id, attempt, validator: decision });
       if (!decision.ok) {

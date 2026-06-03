@@ -5,9 +5,10 @@ import {
   toLlmHistory,
   type ConversationTurn,
 } from "@/lib/chat/pipeline/conversationHistoryManager";
-import { logStructured } from "@/lib/logging/structured-log";
 import { filterImportantHistory, filterImportantMemoryLines } from "./memory-importance-score";
-import { redisGet, redisSet, sessionRedisKey } from "./redis-client";
+import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
+import { logStructured } from "@/lib/logging/structured-log";
+import { redisDel, redisGet, redisSet, sessionRedisKey } from "./redis-client";
 
 const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
 
@@ -36,7 +37,8 @@ function toSnapshot(args: {
   history: Array<{ role: "user" | "assistant"; content: string }>;
 }): ConversationSessionSnapshot {
   const state = args.state ?? {};
-  const turns = sanitizeConversationHistory(fromLlmHistory(args.history)).history;
+  const gated = ensureFinalConversationHistory(args.history);
+  const turns = sanitizeConversationHistory(fromLlmHistory(gated.history)).history;
   const compact = filterImportantHistory(toLlmHistory(turns), 14);
   return {
     sessionId: args.sessionId,
@@ -120,6 +122,14 @@ export function getSessionHistoryAsMessages(snapshot: ConversationSessionSnapsho
     return toLlmHistory(snapshot.historyTurns);
   }
   return Array.isArray(snapshot.compactHistory) ? snapshot.compactHistory : [];
+}
+
+/** Purge Redis session history (intro seeds, compactHistory) on UI reset / new session. */
+export async function purgeConversationSessionHistory(sessionId: string): Promise<void> {
+  const key = sessionRedisKey(sessionId);
+  await redisDel(key);
+  logStructured("[REDIS_HISTORY_PURGED]", { session_id: sessionId, key });
+  logStructured("[SESSION_RESET_CLEAN]", { session_id: sessionId });
 }
 
 export async function saveConversationSession(args: {

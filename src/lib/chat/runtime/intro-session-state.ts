@@ -1,5 +1,6 @@
 import { getConversationUiState } from "@/lib/chat/conversation-ui-state";
 import { logStructured } from "@/lib/logging/structured-log";
+import { purgeConversationSessionHistory } from "@/lib/redis/conversation-session-store";
 
 export function isUiConversationReset(conversationState?: Record<string, unknown> | null): boolean {
   const ui = getConversationUiState({ conversation_state: conversationState ?? undefined });
@@ -43,15 +44,16 @@ export function detectFirstTurn(args: {
   return turnCount <= 1 && !hasAssistant;
 }
 
-export function applyIntroSessionResetIfNeeded(args: {
+export async function applyIntroSessionResetIfNeeded(args: {
   sessionId: string;
   conversationState?: Record<string, unknown> | null;
-}): { state: Record<string, unknown>; reset: boolean } {
+}): Promise<{ state: Record<string, unknown>; reset: boolean }> {
   const base = (args.conversationState ?? {}) as Record<string, unknown>;
   if (!isUiConversationReset(base)) {
     return { state: base, reset: false };
   }
   const next = resetIntroBootstrapState(base);
+  await purgeConversationSessionHistory(args.sessionId);
   logStructured("[INTRO_RESET]", {
     session_id: args.sessionId,
     reason: "ui_cleared_or_new_conversation",

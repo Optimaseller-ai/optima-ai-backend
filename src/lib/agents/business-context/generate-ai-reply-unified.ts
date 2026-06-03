@@ -17,6 +17,7 @@ import {
   safeJsonStringifyForLog,
   type GenerateAIReplyRailwayMeta,
 } from "@/lib/ai/railway-chat-reply-payload";
+import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
 
 export type { GenerateAIReplyRailwayMeta };
 
@@ -99,7 +100,8 @@ export async function generateAIReplyUnified(
     }
 
     const rawHistory = Array.isArray(localArgs.history) ? localArgs.history : [];
-    const sanitizedTurns = sanitizeConversationHistory(fromLlmHistory(rawHistory));
+    const gated = ensureFinalConversationHistory(rawHistory);
+    const sanitizedTurns = sanitizeConversationHistory(fromLlmHistory(gated.history));
     const validatedHistory = toLlmHistory(sanitizedTurns.history);
     validateConversationHistory(sanitizedTurns.history);
     console.log("[HISTORY_BEFORE]", {

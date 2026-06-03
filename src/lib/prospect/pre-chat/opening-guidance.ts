@@ -3,6 +3,7 @@
  */
 
 import type { SmartProspectProfile } from "@/lib/prospect/lead-profile/prospect-profile";
+import { buildTemporalGreeting } from "@/lib/chat/runtime/temporal-greeting";
 
 export function prospectHasExplicitPreChatNeed(lead?: SmartProspectProfile): boolean {
   return Boolean(String(lead?.primaryNeed ?? "").trim().length >= 2);
@@ -43,12 +44,13 @@ export function formatPreChatOpeningGuidanceBlock(args: {
     ].join("\n");
   }
 
+  const { greeting } = buildTemporalGreeting({ businessTimezone: "Africa/Douala" });
   return [
     "PRÉ-CHAT — PAS DE BESOIN PRÉCISÉ (CRITIQUE) :",
     `- ${name} a seulement laissé prénom + contact — aucune intention d’achat déclarée.`,
     "- Accueil type WhatsApp premium : chaleureux, zéro pression commerciale.",
-    `- Ouvrir naturellement : « Bonsoir Monsieur. Bienvenue chez ${biz}. » (${agent})`,
-    "- Puis UNE relance légère au choix (pas les deux) : « Vous aviez vu un produit en particulier ? » OU « Je peux déjà vous présenter ce que nous avons actuellement. »",
-    "- INTERDIT : « quel est votre besoin », qualification CRM, supposer qu’il veut commander.",
+    `- Ouvrir en UNE seule phrase : « ${greeting}, bienvenue chez ${biz}. Je suis ${agent}. »`,
+    "- Pas de question budget ni qualification CRM au premier message.",
+    "- INTERDIT : templates figés « Bonsoir » hors heure locale, triple message d’accueil.",
   ].join("\n");
 }

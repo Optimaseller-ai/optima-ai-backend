@@ -5,6 +5,7 @@ import {
   logOpenRouterProxyConfigOnce,
   resolveOpenRouterProxyConfig,
 } from "./openrouter-proxy-config";
+import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
 
 export async function postOptimaAiBackend<T>(path: string, body: unknown): Promise<T> {
   const cfg = logOpenRouterProxyConfigOnce();
@@ -21,7 +22,17 @@ export async function postOptimaAiBackend<T>(path: string, body: unknown): Promi
 
   const url = `${cfg.backendUrl}${path}`;
   const started = Date.now();
-  const bodyJson = JSON.stringify(body);
+  let payloadBody: unknown = body;
+  if (path === "/v1/chat/reply" && body && typeof body === "object") {
+    const record = body as Record<string, unknown>;
+    if (Array.isArray(record.history)) {
+      const gated = ensureFinalConversationHistory(
+        record.history as Array<{ role: "user" | "assistant"; content: string }>,
+      );
+      payloadBody = { ...record, history: gated.history };
+    }
+  }
+  const bodyJson = JSON.stringify(payloadBody);
 
   console.log("[OPTIMA_PROXY] railway_request_start", {
     path,

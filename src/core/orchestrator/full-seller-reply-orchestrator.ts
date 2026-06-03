@@ -46,6 +46,7 @@ import {
   updateConversationFatigue,
 } from "@/lib/chat/humanization/conversation-fatigue-engine";
 import { loadConversationFatigueState, saveConversationFatigueState } from "@/lib/redis/conversation-fatigue-store";
+import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
 import {
   applyIntroSessionResetIfNeeded,
   detectFirstTurn,
@@ -178,7 +179,7 @@ export async function runFullSellerReplyOrchestration(
       messageLen: input.message.length,
     });
 
-    const introReset = applyIntroSessionResetIfNeeded({
+    const introReset = await applyIntroSessionResetIfNeeded({
       sessionId: input.session_id,
       conversationState: input.conversation_state,
     });
@@ -302,7 +303,8 @@ export async function runFullSellerReplyOrchestration(
     const redisHistory = introReset.reset ? [] : getSessionHistoryAsMessages(redisSession);
     const incomingHistory = introReset.reset ? [] : Array.isArray(input.history) ? input.history : [];
     const mergedRawHistory = filterImportantHistory([...redisHistory, ...incomingHistory], 20);
-    const preloaded = stripLeadingAssistantPreload(mergedRawHistory);
+    const finalGated = ensureFinalConversationHistory(mergedRawHistory);
+    const preloaded = stripLeadingAssistantPreload(finalGated.history);
     if (preloaded.removed > 0) {
       logStructured("[INVALID_ASSISTANT_PRELOAD]", {
         session_id: input.session_id,
@@ -493,11 +495,10 @@ export async function runFullSellerReplyOrchestration(
     if (emotionPersist) {
       finalState.emotionPersistence = emotionPersist;
     }
-    const compactHistory = filterImportantHistory(
-      [...mergedHistory, { role: "assistant", content: String(gen.reply ?? "") }],
-      18,
+    const compactGated = ensureFinalConversationHistory(
+      filterImportantHistory([...mergedHistory, { role: "assistant", content: String(gen.reply ?? "") }], 18),
     );
-    const compactTurns = sanitizeConversationHistory(fromLlmHistory(compactHistory)).history;
+    const compactTurns = sanitizeConversationHistory(fromLlmHistory(compactGated.history)).history;
     validateConversationHistory(compactTurns);
     const compactSanitized = sanitizeHistoryForLlm(toLlmHistory(compactTurns));
     await saveConversationSession({
@@ -554,7 +555,7 @@ export async function runFullSellerReplyOrchestration(
     logStructured("[MEMORY_COMPRESSED]", {
       session_id: input.session_id,
       request_id: input.request_id,
-      compactHistory: compactHistory.length,
+      compactHistory: compactGated.history.length,
       memory: finalState.memory?.length ?? 0,
     });
 

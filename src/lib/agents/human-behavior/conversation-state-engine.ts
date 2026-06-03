@@ -20,6 +20,7 @@ import { detectProspectSocialCues } from "@/lib/agents/human-behavior/emotions/s
 import { prospectCriticizesAgentOrQuality } from "@/lib/agents/human-behavior/human-advisor-reply-filter";
 import { detectSocialIntent, isGreetingOnlyMessage } from "@/lib/agents/human-behavior/social-intent-engine";
 import { readConversationSocialV2 } from "@/lib/agents/memory/conversation-state-v2";
+import { buildSingleIntroMessage, buildTemporalGreeting } from "@/lib/chat/runtime/temporal-greeting";
 
 type Role = "user" | "assistant";
 
@@ -305,62 +306,39 @@ export function tryHumanizedGreetingQuickReply(
   const honorEn = englishHonorificSmart(pp);
   const honorEs = spanishHonorificSmart(pp);
 
-  const sector = String(profile.sector ?? "").toLowerCase();
-  let orientFr = "Nous avons plusieurs articles intéressants en ce moment — dites-moi ce qui vous ferait plaisir.";
-  let orientEn = "We’ve got several strong options right now — tell me what you’re after.";
-  let orientEs = "Tenemos varias opciones interesantes ahora — dígame qué le interesa.";
-  if (/chauss|sport|textil|mode|vetement|vêtement/i.test(sector)) {
-    orientFr = "Vous cherchez plutôt chaussures, accessoires ou autre chose dans ce rayon ?";
-    orientEn = "Are you mainly looking for shoes, accessories, or something else in that range?";
-    orientEs = "¿Busca zapatos, accesorios u otra cosa de ese departamento?";
-  } else if (/élect|electron|info|tel|tech|informat|phone|mobile/i.test(sector)) {
-    orientFr = "Vous cherchez plutôt téléphones, accessoires ou matériel électronique ?";
-    orientEn = "Are you looking for phones, accessories, or other electronics?";
-    orientEs = "¿Busca teléfonos, accesorios u otro equipo electrónico?";
-  }
-
   if (!hasAssistantBefore) {
-    const frLine =
-      honorFr != null
-        ? ([
-            `${dayPartFr} ${honorFr}, bienvenue chez ${profile.businessName}.\n${orientFr}`,
-            `${dayPartFr} ${honorFr}.\n${orientFr}`,
-            `Bonjour et bienvenue chez ${profile.businessName}.\n${orientFr}`,
-          ] as const)
-        : ([
-            `${dayPartFr}, bienvenue chez ${profile.businessName}.\n${orientFr}`,
-            `${dayPartFr}.\n${orientFr}`,
-            `Bonjour et bienvenue chez ${profile.businessName}.\n${orientFr}`,
-          ] as const);
-
-    const enLine =
-      honorEn != null
-        ? ([
-            `${dayPartEn} ${honorEn}, welcome to ${profile.businessName}.\n${orientEn}`,
-            `${dayPartEn} ${honorEn}.\n${orientEn}`,
-            `Hello and welcome to ${profile.businessName}.\n${orientEn}`,
-          ] as const)
-        : ([
-            `${dayPartEn}, welcome to ${profile.businessName}.\n${orientEn}`,
-            `${dayPartEn}.\n${orientEn}`,
-            `Hello and welcome to ${profile.businessName}.\n${orientEn}`,
-          ] as const);
-
-    const esLine =
-      honorEs != null
-        ? ([
-            `${dayPartEs} ${honorEs}, bienvenido a ${profile.businessName}.\n${orientEs}`,
-            `${dayPartEs} ${honorEs}.\n${orientEs}`,
-            `Hola y bienvenido a ${profile.businessName}.\n${orientEs}`,
-          ] as const)
-        : ([
-            `${dayPartEs}, bienvenido a ${profile.businessName}.\n${orientEs}`,
-            `${dayPartEs}.\n${orientEs}`,
-            `Hola y bienvenido a ${profile.businessName}.\n${orientEs}`,
-          ] as const);
-
-    const variants = lang === "en" ? [...enLine] : lang === "es" ? [...esLine] : [...frLine];
-    return pickOne(variants, message + profile.agentName + profile.businessName);
+    if (lang === "fr") {
+      const temporal = buildTemporalGreeting({ businessTimezone: iana });
+      const simpleSalut = /^(salut|coucou|cc|hey|hi|bjr)\b/i.test(message);
+      if (simpleSalut) {
+        return pickOne(
+          [
+            `${temporal.greeting} 👋`,
+            `Salut 🙂`,
+            `${temporal.greeting}, bienvenue chez ${profile.businessName}.`,
+          ],
+          message + profile.agentName,
+        );
+      }
+      const intro = buildSingleIntroMessage({
+        businessName: profile.businessName,
+        agentName: profile.agentName,
+        timezoneInput: { businessTimezone: iana },
+      });
+      if (honorFr) {
+        return pickOne(
+          [`${temporal.greeting} ${honorFr} 👋`, intro, `${temporal.greeting} ${honorFr}, content de vous lire.`],
+          message + profile.businessName,
+        );
+      }
+      return intro;
+    }
+    if (lang === "en") {
+      const intro = `Hello, welcome to ${profile.businessName}. I'm ${profile.agentName}.`;
+      return honorEn ? `${dayPartEn} ${honorEn} 👋` : intro;
+    }
+    const intro = `Hola, bienvenido a ${profile.businessName}. Soy ${profile.agentName}.`;
+    return honorEs ? `${dayPartEs} ${honorEs} 👋` : intro;
   }
 
   const noWelcome = socialV2.welcomeDelivered === true || hasAssistantBefore || turnCount >= 2;

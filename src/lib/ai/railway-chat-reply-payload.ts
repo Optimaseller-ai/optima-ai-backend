@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { SellerBehaviorConversationState } from "@/lib/agents/memory/conversation-state";
+import { ensureFinalConversationHistory } from "@/lib/chat/pipeline/final-history-gate";
 
 export type GenerateAIReplyRailwayMeta = {
   session_id: string;
@@ -35,7 +36,9 @@ function normalizeHistory(
     if ((role !== "user" && role !== "assistant") || !content) continue;
     out.push({ role, content });
   }
-  return out.length ? out.slice(-32) : undefined;
+  if (!out.length) return undefined;
+  const gated = ensureFinalConversationHistory(out.slice(-32));
+  return gated.history.length ? gated.history : undefined;
 }
 
 function normalizeConversationState(

@@ -88,21 +88,16 @@ export function buildHumanSocialGreetingReply(input: GreetingReplyInput): string
   if (!input.welcomeAlreadyDelivered) {
     return pick(
       [
-        `${salute}${honorSuffix}${emoji}\nComment allez-vous ?`,
-        `${salute} et bienvenue chez ${biz}${wave}`,
-        `${salute}${honorSuffix}${emoji}\nJe suis ${displayName}, ${advisorFr} chez ${biz} — je suis là si vous avez besoin d'aide.`,
-        `${salute}${honorSuffix}${wave}\nContente de vous lire — dites-moi ce qu'il vous faut quand vous voulez.`,
+        `${salute}${honorSuffix}${wave}`,
+        `${salute}, bienvenue chez ${biz}${emoji}`,
+        `${salute}${honorSuffix}${emoji} — je suis ${displayName} chez ${biz}.`,
       ],
       seed,
     );
   }
 
   return pick(
-    [
-      `${salute}${honorSuffix}${emoji}\nContent de vous lire.`,
-      `${salute}${honorSuffix}${emoji}`,
-      `${salute}${honorSuffix}${emoji}\nOui 🙂`,
-    ],
+    [`${salute}${honorSuffix}${emoji}`, `${salute}${honorSuffix}${wave}`, `Salut${emoji}`],
     seed,
   );
 }
