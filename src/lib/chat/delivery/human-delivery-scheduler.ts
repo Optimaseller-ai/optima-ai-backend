@@ -1,6 +1,8 @@
 import { redisDel, redisGet, redisKey, redisSet } from "@/lib/redis/redis-client";
 import { logStructured } from "@/lib/logging/structured-log";
 import type { FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
+import type { ConversationFatigueState } from "@/lib/chat/humanization/conversation-fatigue-engine";
+import { fatigueTypingMultiplier } from "@/lib/chat/humanization/conversation-fatigue-engine";
 import {
   broadcastFragment,
   broadcastMessageComplete,
@@ -47,6 +49,7 @@ type SchedulerArgs = {
   fragmentedReply?: FragmentedReply;
   emotion?: string;
   personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
+  fatigue?: ConversationFatigueState;
 };
 
 const DELIVERY_TTL_SEC = 90;
@@ -150,6 +153,7 @@ export function computeFragmentDeliveryPlan(args: {
   emotion?: string;
   seed: string;
   personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
+  fatigue?: ConversationFatigueState;
 }): ScheduledDeliveryStep[] {
   const steps: ScheduledDeliveryStep[] = [];
   let cursor = 0;
@@ -179,7 +183,7 @@ export function computeFragmentDeliveryPlan(args: {
             fragmentCount: args.fragments.length,
             difficulty: f.content.length > 110 ? "high" : f.content.length > 45 ? "medium" : "low",
             seed: `${args.seed}|frag-${i}`,
-            typingSpeed: args.personality?.typingSpeed,
+            typingSpeed: (args.personality?.typingSpeed ?? 1) * fatigueTypingMultiplier(args.fatigue),
           }),
       ),
       400,
@@ -208,6 +212,7 @@ export function buildDeliveryTimeline(args: {
   emotion?: string;
   seed: string;
   personality?: { typingSpeed?: number; reactionDelayStyle?: "fast" | "normal" | "slow" };
+  fatigue?: ConversationFatigueState;
 }): HumanDeliveryPlan {
   const fromFragments =
     args.fragmentedReply?.fragments?.length && args.fragmentedReply.fragmented
@@ -219,7 +224,13 @@ export function buildDeliveryTimeline(args: {
       : [{ content: String(args.fallbackReply ?? "").trim() }];
 
   const fragments = fromFragments.filter((x) => x.content.length > 0).slice(0, 3);
-  const steps = computeFragmentDeliveryPlan({ fragments, emotion: args.emotion, seed: args.seed, personality: args.personality });
+  const steps = computeFragmentDeliveryPlan({
+    fragments,
+    emotion: args.emotion,
+    seed: args.seed,
+    personality: args.personality,
+    fatigue: args.fatigue,
+  });
   const rawTotal = steps.length ? Math.max(...steps.map((s) => s.executeAt)) : 0;
   const totalDurationMs = clamp(rawTotal, 1000, 25_000);
 
@@ -297,6 +308,7 @@ export async function scheduleHumanDelivery(args: SchedulerArgs): Promise<HumanD
     emotion,
     seed,
     personality: args.personality,
+    fatigue: args.fatigue,
   });
 
   const runtime: RuntimeDeliveryState = {

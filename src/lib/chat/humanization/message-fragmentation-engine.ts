@@ -18,6 +18,12 @@ export type FragmentationPersonalityHints = {
   reactionDelayStyle?: "fast" | "normal" | "slow";
 };
 
+export type FragmentationFatigueHints = {
+  fatigueScore?: number;
+  conversationPhase?: string;
+  responseCompression?: number;
+};
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -53,6 +59,7 @@ export function shouldFragmentReply(args: {
   emotion?: string;
   socialOnlyMode?: boolean;
   personality?: FragmentationPersonalityHints;
+  fatigue?: FragmentationFatigueHints;
 }): boolean {
   const reply = String(args.reply ?? "").trim();
   if (!reply || reply.length < 18) return false;
@@ -67,6 +74,10 @@ export function shouldFragmentReply(args: {
     if (reply.length >= 60) return true;
   }
   if (args.socialOnlyMode) return true;
+  const fatigueScore = Number(args.fatigue?.fatigueScore ?? 0);
+  const phase = String(args.fatigue?.conversationPhase ?? "");
+  if (fatigueScore >= 0.58 || phase === "fatigued" || phase === "drained") return false;
+  if ((phase === "fresh" || phase === "engaged") && reply.length >= 55) return true;
   return /\b(oui|franchement|je vois|attends|je regarde|dommage|bizarre)\b/i.test(reply) || reply.length > 90;
 }
 
@@ -155,6 +166,7 @@ export function buildHumanFragments(args: {
   socialOnlyMode?: boolean;
   seed: string;
   personality?: FragmentationPersonalityHints;
+  fatigue?: FragmentationFatigueHints;
 }): FragmentedReply {
   if (!shouldFragmentReply(args)) {
     console.log("[FRAGMENT_SKIPPED]", { reason: "rules", len: String(args.reply ?? "").trim().length });

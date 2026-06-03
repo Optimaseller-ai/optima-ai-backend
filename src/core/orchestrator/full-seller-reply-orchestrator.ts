@@ -42,6 +42,11 @@ import {
 } from "@/lib/chat/personality/personality-variation-engine";
 import { loadPersonalityState, savePersonalityState } from "@/lib/redis/personality-state-store";
 import {
+  buildFatigueContext,
+  updateConversationFatigue,
+} from "@/lib/chat/humanization/conversation-fatigue-engine";
+import { loadConversationFatigueState, saveConversationFatigueState } from "@/lib/redis/conversation-fatigue-store";
+import {
   buildEmotionalContext,
   updateEmotionalContinuity,
 } from "@/lib/chat/emotion/emotional-continuity-engine";
@@ -172,6 +177,7 @@ export async function runFullSellerReplyOrchestration(
     const humanMemoryState = await loadHumanMemory(input.session_id);
     const emotionalState = await loadEmotionalState(input.session_id);
     const personalityState = await loadPersonalityState(input.session_id);
+    const fatigueStatePrev = await loadConversationFatigueState(input.session_id);
     const nextEmotionalState = updateEmotionalContinuity({
       previous: emotionalState ?? undefined,
       userMessage: input.message,
@@ -257,6 +263,7 @@ export async function runFullSellerReplyOrchestration(
       agentPersonalityProfile: nextPersonalityProfile,
       agentPersonalityIdentity: identityText,
     };
+
     console.log("[REDIS_BEFORE]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -293,6 +300,40 @@ export async function runFullSellerReplyOrchestration(
     workingTurns = sanitizeConversationHistory(appendedUser.history).history;
     validateConversationHistory(workingTurns);
     const mergedHistory = toLlmHistory(workingTurns);
+
+    const nextFatigueState = updateConversationFatigue({
+      previous: fatigueStatePrev,
+      userMessage: input.message,
+      historyTurns: mergedHistory.length,
+      agentName: input.agent_name,
+      baseSalesPressure: nextPersonalityProfile.salesPressure,
+    });
+    const fatigueContext = buildFatigueContext({
+      state: nextFatigueState,
+      agentName: input.agent_name,
+      lang: "fr",
+    });
+    (input.conversation_state as any) = {
+      ...(input.conversation_state ?? {}),
+      conversationFatigueState: nextFatigueState,
+      conversationFatigueContext: fatigueContext,
+      stats: {
+        ...((input.conversation_state as any)?.stats ?? {}),
+        turn_count: nextFatigueState.totalMessages,
+        fatigue: nextFatigueState.fatigueScore,
+        last_active_at: Date.now(),
+      },
+    };
+    hydratedState = {
+      ...hydratedState,
+      stats: {
+        ...(hydratedState.stats ?? {}),
+        turn_count: nextFatigueState.totalMessages,
+        fatigue: nextFatigueState.fatigueScore,
+        last_active_at: Date.now(),
+      },
+    };
+
     logStructured("[SESSION_HYDRATED]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -386,6 +427,7 @@ export async function runFullSellerReplyOrchestration(
       fragmentedReply: (gen as any)?.fragmentedReply,
       emotion: String((nextEmotionalState as any)?.active?.label ?? ""),
       personality: nextPersonalityProfile,
+      fatigue: nextFatigueState,
     });
     timingScheduled.push("scheduled_reply");
 
@@ -449,6 +491,12 @@ export async function runFullSellerReplyOrchestration(
     await saveHumanMemory(input.session_id, nextHumanMemory);
     await saveEmotionalState(input.session_id, nextEmotionalState);
     await savePersonalityState(input.session_id, repairedPersonalityState);
+    await saveConversationFatigueState(input.session_id, nextFatigueState);
+    logStructured("[FATIGUE_STATE_SAVED]", {
+      session_id: input.session_id,
+      fatigueScore: nextFatigueState.fatigueScore,
+      phase: nextFatigueState.conversationPhase,
+    });
     console.log("[REDIS_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,

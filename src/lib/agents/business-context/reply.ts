@@ -136,6 +136,7 @@ import { validateHumanReplyLength } from "@/lib/ai/validators/humanReplyValidato
 import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
 import { generatePersonalityInstructions } from "@/lib/chat/personality/personality-variation-engine";
+import { applyFatigueStyle } from "@/lib/chat/humanization/conversation-fatigue-engine";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
@@ -1424,6 +1425,64 @@ export async function generateAIReply(args: {
       });
     }
   }
+
+  // Conversation fatigue (separate from emotion): compress energy/questions over long threads.
+  const fatigueState = (args.conversationState as any)?.conversationFatigueState as any;
+  const fatigueContext = String((args.conversationState as any)?.conversationFatigueContext ?? "").trim();
+  if (fatigueState && typeof fatigueState === "object") {
+    const fatigueStyle = applyFatigueStyle({
+      state: fatigueState,
+      agentName: sellerProfile.agentName,
+      lang: langForBrain as any,
+    });
+    humanPlan.preGenerationDirectives.push(...fatigueStyle.directives.slice(0, 5));
+    if (fatigueContext) humanPlan.preGenerationDirectives.push(fatigueContext);
+    const qProb = Number(fatigueState.questionProbability ?? 1);
+    if (qProb < 0.22) {
+      (humanPlan as any).questionBudget = {
+        ...humanPlan.questionBudget,
+        askQuestion: false,
+        maxQuestions: 0,
+        reason: "fatigue_question_reduction",
+      };
+    } else if (qProb < 0.45 && humanPlan.questionBudget.askQuestion) {
+      (humanPlan as any).questionBudget = {
+        ...humanPlan.questionBudget,
+        askQuestion: false,
+        maxQuestions: 0,
+        reason: "fatigue_low_question_probability",
+      };
+    }
+    logStructured("[FATIGUE_SCORE]", {
+      request_id: args.replyTurn?.request_id,
+      fatigueScore: Number(fatigueState.fatigueScore ?? 0),
+      phase: String(fatigueState.conversationPhase ?? ""),
+    });
+    logStructured("[ENERGY_LEVEL]", {
+      request_id: args.replyTurn?.request_id,
+      energyLevel: Number(fatigueState.energyLevel ?? 0),
+    });
+    logStructured("[QUESTION_REDUCTION]", {
+      request_id: args.replyTurn?.request_id,
+      questionProbability: qProb,
+    });
+    logStructured("[REPLY_COMPRESSION]", {
+      request_id: args.replyTurn?.request_id,
+      responseCompression: Number(fatigueState.responseCompression ?? 0),
+    });
+    logStructured("[COMMERCIAL_PERSISTENCE]", {
+      request_id: args.replyTurn?.request_id,
+      commercialPersistence: Number(fatigueState.commercialPersistence ?? 0),
+    });
+    logStructured("[HUMAN_DRIFT]", {
+      request_id: args.replyTurn?.request_id,
+      humanDrift: Number(fatigueState.humanDrift ?? 0),
+    });
+    if (fatigueContext) {
+      logStructured("[FATIGUE_CONTEXT]", { request_id: args.replyTurn?.request_id, context: fatigueContext.slice(0, 220) });
+    }
+  }
+
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[QUESTION_PROBABILITY]", {
@@ -1498,7 +1557,12 @@ export async function generateAIReply(args: {
   }
   const emotionalContinuityContext = String((args.conversationState as any)?.emotionalContinuityContext ?? "").trim();
   const emotionalFacts = emotionalContinuityContext ? [emotionalContinuityContext] : [];
-  const memFacts = cleanMemoryFacts({ facts: [...emotionalFacts, ...humanContextFacts, ...cleanedLearningFacts], limit: 5 });
+  const fatigueCtx = String((args.conversationState as any)?.conversationFatigueContext ?? "").trim();
+  const fatigueFacts = fatigueCtx ? [fatigueCtx] : [];
+  const memFacts = cleanMemoryFacts({
+    facts: [...emotionalFacts, ...fatigueFacts, ...humanContextFacts, ...cleanedLearningFacts],
+    limit: 5,
+  });
   console.log("[MEMORY_COMPRESSION]", {
     request_id: args.replyTurn?.request_id,
     factsBefore: learningFactsRaw.length,
@@ -1919,6 +1983,7 @@ export async function generateAIReply(args: {
     socialOnlyMode: socialOnly,
     seed: `${microSeed}|fragment`,
     personality: (args.conversationState as any)?.agentPersonalityProfile,
+    fatigue: (args.conversationState as any)?.conversationFatigueState,
   });
 
   console.log("[TRACE]", "delivery_simulation_start", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
