@@ -137,6 +137,11 @@ import { buildHumanDeliveryPlan } from "@/lib/chat/humanDeliverySimulator";
 import { buildHumanFragments, type FragmentedReply } from "@/lib/chat/humanization/message-fragmentation-engine";
 import { generatePersonalityInstructions } from "@/lib/chat/personality/personality-variation-engine";
 import { applyFatigueStyle } from "@/lib/chat/humanization/conversation-fatigue-engine";
+import {
+  buildGreetingContext,
+  enforceGreetingTimeGuard,
+  getLocalTimeContext,
+} from "@/lib/chat/runtime/time-awareness-engine";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
@@ -1483,6 +1488,32 @@ export async function generateAIReply(args: {
     }
   }
 
+  const introDone =
+    (args.conversationState as any)?.intro_done === true ||
+    welcomeDone ||
+    turnCount >= 2 ||
+    (Array.isArray(history) && history.some((m: any) => m.role === "assistant"));
+  const localTimeContext = getLocalTimeContext({
+    sessionTimezone:
+      (args.conversationState as any)?.timezone ??
+      (args.conversationState as any)?.sessionTimezone ??
+      null,
+    userTimezone: (args.conversationState as any)?.userTimezone ?? null,
+    browserTimezone:
+      (args.conversationState as any)?.browserTimezone ??
+      (args.conversationState as any)?.clientTimezone ??
+      null,
+    businessTimezone: sellerProfile.businessIanaTimezone,
+  });
+  const greetingCtx = buildGreetingContext({
+    time: localTimeContext,
+    introDone,
+    welcomeDone,
+    userMessage: message,
+    lang: langForBrain as any,
+  });
+  humanPlan.preGenerationDirectives.push(greetingCtx.promptBlock);
+
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 
   console.log("[QUESTION_PROBABILITY]", {
@@ -1559,8 +1590,9 @@ export async function generateAIReply(args: {
   const emotionalFacts = emotionalContinuityContext ? [emotionalContinuityContext] : [];
   const fatigueCtx = String((args.conversationState as any)?.conversationFatigueContext ?? "").trim();
   const fatigueFacts = fatigueCtx ? [fatigueCtx] : [];
+  const timeFacts = greetingCtx.promptBlock ? [greetingCtx.promptBlock.replace(/\n/g, " ")] : [];
   const memFacts = cleanMemoryFacts({
-    facts: [...emotionalFacts, ...fatigueFacts, ...humanContextFacts, ...cleanedLearningFacts],
+    facts: [...emotionalFacts, ...fatigueFacts, ...timeFacts, ...humanContextFacts, ...cleanedLearningFacts],
     limit: 5,
   });
   console.log("[MEMORY_COMPRESSION]", {
@@ -1974,6 +2006,20 @@ export async function generateAIReply(args: {
     } else {
       cleaned = finalText;
     }
+  }
+
+  const greetingGuard = enforceGreetingTimeGuard({
+    reply: cleaned,
+    hour: localTimeContext.hour,
+    introDone,
+  });
+  if (greetingGuard.adjusted) {
+    cleaned = greetingGuard.reply;
+    logStructured("[GREETING_TIME_GUARD]", {
+      request_id: args.replyTurn?.request_id,
+      hour: localTimeContext.hour,
+      reason: greetingGuard.reason,
+    });
   }
 
   const fragmentedReply = buildHumanFragments({
