@@ -47,6 +47,11 @@ import {
 } from "@/lib/chat/humanization/conversation-fatigue-engine";
 import { loadConversationFatigueState, saveConversationFatigueState } from "@/lib/redis/conversation-fatigue-store";
 import {
+  applyIntroSessionResetIfNeeded,
+  detectFirstTurn,
+} from "@/lib/chat/runtime/intro-session-state";
+import { stripLeadingAssistantPreload } from "@/lib/chat/pipeline/conversationHistoryManager";
+import {
   buildEmotionalContext,
   updateEmotionalContinuity,
 } from "@/lib/chat/emotion/emotional-continuity-engine";
@@ -173,6 +178,14 @@ export async function runFullSellerReplyOrchestration(
       messageLen: input.message.length,
     });
 
+    const introReset = applyIntroSessionResetIfNeeded({
+      sessionId: input.session_id,
+      conversationState: input.conversation_state,
+    });
+    if (introReset.reset) {
+      input.conversation_state = introReset.state;
+    }
+
     const redisSession = await loadConversationSession(input.session_id);
     const humanMemoryState = await loadHumanMemory(input.session_id);
     const emotionalState = await loadEmotionalState(input.session_id);
@@ -286,11 +299,17 @@ export async function runFullSellerReplyOrchestration(
     }
     hydratedState = restoreRelationshipMemory(hydratedState, (redisSession as any)?.relationshipMemory);
     hydratedState.memory = filterImportantMemoryLines(hydratedState.memory ?? [], 14);
-    const mergedRawHistory = filterImportantHistory(
-      [...getSessionHistoryAsMessages(redisSession), ...(Array.isArray(input.history) ? input.history : [])],
-      20,
-    );
-    const mergedSanitizedTurns = sanitizeConversationHistory(fromLlmHistory(mergedRawHistory));
+    const redisHistory = introReset.reset ? [] : getSessionHistoryAsMessages(redisSession);
+    const incomingHistory = introReset.reset ? [] : Array.isArray(input.history) ? input.history : [];
+    const mergedRawHistory = filterImportantHistory([...redisHistory, ...incomingHistory], 20);
+    const preloaded = stripLeadingAssistantPreload(mergedRawHistory);
+    if (preloaded.removed > 0) {
+      logStructured("[INVALID_ASSISTANT_PRELOAD]", {
+        session_id: input.session_id,
+        removed: preloaded.removed,
+      });
+    }
+    const mergedSanitizedTurns = sanitizeConversationHistory(fromLlmHistory(preloaded.history));
     let workingTurns = mergedSanitizedTurns.history;
     const appendedUser = appendConversationTurn(workingTurns, {
       role: "user",
@@ -351,6 +370,18 @@ export async function runFullSellerReplyOrchestration(
       fingerprints: workingTurns.slice(-6).map((t) => t.fingerprint),
     });
     const sanitizedHistory = sanitizeHistoryForLlm(mergedHistory);
+    const isFirstTurnSession = detectFirstTurn({
+      turnCount: mergedHistory.filter((m) => m.role === "user").length,
+      history: mergedHistory,
+      uiReset: introReset.reset,
+    });
+    if (isFirstTurnSession) {
+      logStructured("[FIRST_TURN_DETECTED]", {
+        session_id: input.session_id,
+        request_id: input.request_id,
+        uiReset: introReset.reset,
+      });
+    }
     console.log("[HISTORY_AFTER]", {
       session_id: input.session_id,
       request_id: input.request_id,
@@ -449,6 +480,13 @@ export async function runFullSellerReplyOrchestration(
     };
     const conversationStateNext = (gen as any)?.conversationStateNext as Record<string, unknown> | undefined;
     const finalState = (conversationStateNext ?? sanitizedConversationState) as any;
+    if (String(gen.reply ?? "").trim() && !isFirstTurnSession) {
+      finalState.intro_done = true;
+      finalState.conversationSocialV2 = {
+        ...(finalState.conversationSocialV2 ?? {}),
+        welcomeDelivered: true,
+      };
+    }
     finalState.followupMemory = captureFollowupMemory(String(gen.reply ?? ""), finalState);
     finalState.relationshipMemory = captureRelationshipMemory(finalState);
     const emotionPersist = captureEmotionalPersistence(finalState);

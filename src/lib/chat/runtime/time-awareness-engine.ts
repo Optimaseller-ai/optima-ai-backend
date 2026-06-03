@@ -64,19 +64,46 @@ export function detectGreetingPeriod(hour: number): {
   return { period: "night", greeting: "Bonsoir", periodLabelFr: "nuit" };
 }
 
-export function getLocalTimeContext(input: TimeAwarenessInput): LocalTimeContext {
-  const { timezone } = resolveSessionTimezone(input);
+export function getLocalGreetingByTimezone(input: TimeAwarenessInput): LocalTimeContext {
+  const { timezone, source } = resolveSessionTimezone(input);
   const nowMs = typeof input.now === "number" ? input.now : Date.now();
-  const dt = DateTime.fromMillis(nowMs, { zone: timezone });
-  const safe = dt.isValid ? dt : DateTime.now().setZone(FALLBACK_TZ);
-  const hour = safe.hour;
-  const minute = safe.minute;
-  const { period, greeting } = detectGreetingPeriod(hour);
+  const now = new Date(nowMs);
 
-  const ctx: LocalTimeContext = { hour, minute, timezone, period, greeting };
+  let hour = 0;
+  let minute = 0;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(now);
+    hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+    minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  } catch {
+    const dt = DateTime.fromMillis(nowMs, { zone: timezone });
+    const safe = dt.isValid ? dt : DateTime.now().setZone(FALLBACK_TZ);
+    hour = safe.hour;
+    minute = safe.minute;
+  }
+
+  const { period, greeting } = detectGreetingPeriod(hour);
+  const ctx: LocalTimeContext = {
+    hour: Math.max(0, Math.min(23, hour)),
+    minute: Math.max(0, Math.min(59, minute)),
+    timezone,
+    period,
+    greeting,
+  };
+  logStructured("[GREETING_TIMEZONE]", { timezone, source, hour: ctx.hour, minute: ctx.minute, greeting: ctx.greeting });
   logStructured("[TIME_CONTEXT]", ctx);
-  logStructured("[GREETING_PERIOD]", { period, hour, greeting });
+  logStructured("[GREETING_PERIOD]", { period, hour: ctx.hour, greeting });
   return ctx;
+}
+
+export function getLocalTimeContext(input: TimeAwarenessInput): LocalTimeContext {
+  return getLocalGreetingByTimezone(input);
 }
 
 function userMessageHasGreeting(message: string): boolean {

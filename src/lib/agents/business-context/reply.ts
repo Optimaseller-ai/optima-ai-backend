@@ -142,6 +142,8 @@ import {
   enforceGreetingTimeGuard,
   getLocalTimeContext,
 } from "@/lib/chat/runtime/time-awareness-engine";
+import { detectFirstTurn } from "@/lib/chat/runtime/intro-session-state";
+import { isRoboticGreetingReply } from "@/lib/chat/runtime/human-greeting-engine";
 import { applyHumanImperfections } from "@/lib/ai/imperfectionEngine";
 import { enforcePremiumEmojiPolicy } from "@/lib/ai/emojiPolicy";
 import {
@@ -468,8 +470,34 @@ export async function generateAIReply(args: {
   });
 
   const turnCount = args.conversationState?.stats?.turn_count ?? 0;
+  const uiCleared = (args.conversationState as any)?.conversationUi?.cleared_by_user === true;
+  const hasRealAssistantInHistory =
+    Array.isArray(history) &&
+    history.some((m: any) => m.role === "assistant" && String(m.content ?? "").trim().length > 2);
+  const isFirstTurn = detectFirstTurn({ turnCount, history, uiReset: uiCleared });
+  if (isFirstTurn) {
+    logStructured("[FIRST_TURN_DETECTED]", {
+      request_id: args.replyTurn?.request_id,
+      turnCount,
+      uiCleared,
+    });
+  }
   const welcomeDone =
-    args.conversationState?.conversationSocialV2?.welcomeDelivered === true || turnCount >= 2;
+    !uiCleared &&
+    args.conversationState?.conversationSocialV2?.welcomeDelivered === true &&
+    hasRealAssistantInHistory;
+  const localTimeContext = getLocalTimeContext({
+    sessionTimezone:
+      (args.conversationState as any)?.timezone ??
+      (args.conversationState as any)?.sessionTimezone ??
+      null,
+    userTimezone: (args.conversationState as any)?.userTimezone ?? null,
+    browserTimezone:
+      (args.conversationState as any)?.browserTimezone ??
+      (args.conversationState as any)?.clientTimezone ??
+      null,
+    businessTimezone: sellerProfile.businessIanaTimezone,
+  });
   const allowEmoji = (args.conversationState?.conversationalEtiquette?.repliesSinceLastEmoji ?? 7) >= 7;
   const socialUnderstanding = analyzeSocialUnderstanding(message);
   logStructured("[SOCIAL_ENGINE]", {
@@ -525,26 +553,43 @@ export async function generateAIReply(args: {
   });
 
   if (socialUnderstanding.isGreetingDirected && !forceMainPipeline && args.followupAfterHold !== true) {
-    const startGreeting = turnCount <= 1;
     const greetingReply = pickDirectedGreetingReply({
       message,
       lang: langForSocial,
       seed: `${args.sessionId ?? userId}|${args.replyTurn?.request_id ?? ""}|greeting`,
       businessName: sellerProfile.businessName,
       agentName: sellerProfile.agentName,
-      isConversationStart: startGreeting,
+      isConversationStart: isFirstTurn,
+      timezone: sellerProfile.businessIanaTimezone,
+      userTimezone: (args.conversationState as any)?.userTimezone ?? null,
+      browserTimezone:
+        (args.conversationState as any)?.browserTimezone ??
+        (args.conversationState as any)?.clientTimezone ??
+        null,
     });
-    logStructured("[SOCIAL_ENGINE]", {
-      request_id: args.replyTurn?.request_id,
-      action: "direct_greeting_reply",
-      startGreeting,
-      reply: greetingReply,
-    });
-    return {
-      reply: greetingReply,
-      replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
-      socialOnlyMode: false,
-    };
+    if (isRoboticGreetingReply(greetingReply)) {
+      logStructured("[INTRO_BOOTSTRAP_BLOCKED]", {
+        request_id: args.replyTurn?.request_id,
+        reply: greetingReply.slice(0, 160),
+      });
+    } else {
+      const guarded = enforceGreetingTimeGuard({
+        reply: greetingReply,
+        hour: localTimeContext.hour,
+        introDone: !isFirstTurn,
+      });
+      logStructured("[SOCIAL_ENGINE]", {
+        request_id: args.replyTurn?.request_id,
+        action: "direct_greeting_reply",
+        isFirstTurn,
+        reply: guarded.reply,
+      });
+      return {
+        reply: guarded.reply,
+        replyTransformationChain: sanitizeReplyTransformationChain(transformLogs as any),
+        socialOnlyMode: false,
+      };
+    }
   }
 
   // Highest priority: accept natural endings (no follow-up, no relance, no sales).
@@ -1489,22 +1534,9 @@ export async function generateAIReply(args: {
   }
 
   const introDone =
-    (args.conversationState as any)?.intro_done === true ||
-    welcomeDone ||
-    turnCount >= 2 ||
-    (Array.isArray(history) && history.some((m: any) => m.role === "assistant"));
-  const localTimeContext = getLocalTimeContext({
-    sessionTimezone:
-      (args.conversationState as any)?.timezone ??
-      (args.conversationState as any)?.sessionTimezone ??
-      null,
-    userTimezone: (args.conversationState as any)?.userTimezone ?? null,
-    browserTimezone:
-      (args.conversationState as any)?.browserTimezone ??
-      (args.conversationState as any)?.clientTimezone ??
-      null,
-    businessTimezone: sellerProfile.businessIanaTimezone,
-  });
+    !uiCleared &&
+    !isFirstTurn &&
+    (((args.conversationState as any)?.intro_done === true) || welcomeDone);
   const greetingCtx = buildGreetingContext({
     time: localTimeContext,
     introDone,
@@ -1513,6 +1545,11 @@ export async function generateAIReply(args: {
     lang: langForBrain as any,
   });
   humanPlan.preGenerationDirectives.push(greetingCtx.promptBlock);
+  if (isFirstTurn) {
+    humanPlan.preGenerationDirectives.push(
+      "Premier message: pas de pitch commercial, pas de question budget, pas de « comment puis-je vous aider ».",
+    );
+  }
 
   console.log("[TRACE]", "human_behavior_engine_end", { ms: Date.now() - pipelineStart, request_id: args.replyTurn?.request_id });
 

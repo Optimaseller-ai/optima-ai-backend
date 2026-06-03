@@ -1,4 +1,5 @@
 import type { BusinessKnowledgeBase } from "@/lib/business-brain/context/business-knowledge-base";
+import { pickHumanGreetingReply } from "@/lib/chat/runtime/human-greeting-engine";
 
 export type SocialSignalKind =
   | "greeting_directed"
@@ -81,39 +82,24 @@ export function pickDirectedGreetingReply(args: {
   businessName?: string;
   agentName?: string;
   isConversationStart?: boolean;
+  timezone?: string;
+  browserTimezone?: string | null;
+  userTimezone?: string | null;
 }): string {
-  const seed = `${args.seed ?? args.message}|${args.lang}`;
-  if (args.isConversationStart) {
-    const intro =
-      args.lang === "en"
-        ? `Good evening and welcome to ${args.businessName ?? "our shop"}.`
-        : args.lang === "es"
-          ? `Buenas noches y bienvenido a ${args.businessName ?? "nuestra tienda"}.`
-          : `Bonsoir et bienvenue chez ${args.businessName ?? "nous"}.`;
-    const me =
-      args.lang === "en"
-        ? `I'm ${args.agentName ?? "Jordan"}.`
-        : args.lang === "es"
-          ? `Soy ${args.agentName ?? "Jordan"}.`
-          : `Je suis ${args.agentName ?? "Jordan"}.`;
-    const follow = seededPick(
-      args.lang === "en"
-        ? ["How can I help you?", "Looking for something specific?"]
-        : args.lang === "es"
-          ? ["Le puedo orientar?", "Busca algo en particular?"]
-          : ["Je peux vous renseigner ?", "Vous cherchez quelque chose ?"],
-      seed + "|follow",
-    );
-    return `${intro}\n${me}\n${follow}`;
-  }
-
-  const pool =
-    args.lang === "en"
-      ? (["Good evening", "Hi there", "Hello 👋", "Good evening, how are you?"] as const)
-      : args.lang === "es"
-        ? (["Buenas noches", "Hola", "Hola 👋", "Buenas noches, qué tal?"] as const)
-        : (["Bonsoir 😄", "Bonsoir", "Salut 👋", "Bonsoir, vous allez bien ?"] as const);
-  return seededPick(pool, seed);
+  return pickHumanGreetingReply({
+    message: args.message,
+    lang: args.lang,
+    seed: `${args.seed ?? args.message}|${args.lang}`,
+    timezoneInput: {
+      sessionTimezone: args.timezone ?? null,
+      userTimezone: args.userTimezone ?? null,
+      browserTimezone: args.browserTimezone ?? null,
+      businessTimezone: args.timezone ?? null,
+    },
+    businessName: args.businessName,
+    agentName: args.agentName,
+    isFirstTurn: args.isConversationStart === true,
+  });
 }
 
 export function isLowHumanQualityReply(args: {

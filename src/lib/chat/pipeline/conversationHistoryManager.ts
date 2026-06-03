@@ -122,6 +122,19 @@ export function appendConversationTurn(history: ConversationTurn[], input: {
   return { history: base, appended: true };
 }
 
+/** Remove phantom assistant preloads at the start of history (before any user turn). */
+export function stripLeadingAssistantPreload(
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+): { history: Array<{ role: "user" | "assistant"; content: string }>; removed: number } {
+  const list = Array.isArray(history) ? [...history] : [];
+  let removed = 0;
+  while (list.length > 0 && list[0]!.role === "assistant") {
+    list.shift();
+    removed++;
+  }
+  return { history: list, removed };
+}
+
 export function validateConversationHistory(history: ConversationTurn[]): void {
   const list = Array.isArray(history) ? history : [];
   if (!list.length) throw new Error("INVALID_HISTORY_EMPTY");

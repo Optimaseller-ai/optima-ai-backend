@@ -2,9 +2,11 @@ import {
   computeHistoryQualityScore as computeHistoryQualityScoreManager,
   fromLlmHistory,
   sanitizeConversationHistory as sanitizeConversationHistoryManager,
+  stripLeadingAssistantPreload,
   toLlmHistory,
   validateConversationHistory,
 } from "./conversationHistoryManager";
+import { logStructured } from "@/lib/logging/structured-log";
 
 export const SYSTEM_MEMORY_BLACKLIST = [
   "je suis là",
@@ -47,7 +49,15 @@ export function sanitizeHistoryForLlm(
 } {
   const list = Array.isArray(history) ? history : [];
   const beforeCount = list.length;
-  const turns = fromLlmHistory(list);
+  const preloaded = stripLeadingAssistantPreload(list);
+  if (preloaded.removed > 0) {
+    logStructured("[INVALID_ASSISTANT_PRELOAD]", {
+      removed: preloaded.removed,
+      before_count: beforeCount,
+      after_count: preloaded.history.length,
+    });
+  }
+  const turns = fromLlmHistory(preloaded.history);
   const sanitizedTurns = sanitizeConversationHistoryManager(turns);
   const sanitizedHistory = toLlmHistory(sanitizedTurns.history);
   const validation = validateHistoryForLLM(sanitizedHistory);
