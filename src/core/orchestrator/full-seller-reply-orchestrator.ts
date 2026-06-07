@@ -468,8 +468,9 @@ export async function runFullSellerReplyOrchestration(
     });
     timingScheduled.push("scheduled_reply");
 
+    const rawReply = String(gen.reply ?? "").trim();
     const humanEnsured = ensureValidHumanReplySync({
-      reply: replyForClient,
+      reply: rawReply,
       userMessage: input.message,
       requestId: input.request_id,
       socialOnly: gen.socialOnlyMode === true,
