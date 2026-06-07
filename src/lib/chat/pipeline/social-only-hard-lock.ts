@@ -30,13 +30,35 @@ export type SocialOnlyHardLockSnapshot = {
   fallbackReply: string | null;
 };
 
+function identityResponse(
+  lang: "fr" | "en" | "es",
+  agentName: string,
+  businessName: string,
+  personaKey?: string | null,
+): string {
+  const displayName = agentName || "Conseiller";
+  const biz = businessName || "notre boutique";
+  if (lang === "en") {
+    return `I'm ${displayName} from ${biz} — I handle customer service here 🙂`;
+  }
+  if (lang === "es") {
+    return `Soy ${displayName} de ${biz} — estoy aquí para ayudarle 🙂`;
+  }
+  return `Je suis ${displayName} du service client chez ${biz} 🙂`;
+}
+
 function minimalSocialFallback(
   lang: "fr" | "en" | "es",
   signal: string,
   businessName: string,
   agentName: string,
   requiresEmpathy: boolean,
+  intentKind?: string,
+  personaKey?: string | null,
 ): string {
+  if (intentKind === "identity_request") {
+    return identityResponse(lang, agentName, businessName, personaKey);
+  }
   if (requiresEmpathy) {
     return lockedLanguageFallback({ lang, businessName, agentName, kind: "empathy" });
   }
@@ -140,6 +162,20 @@ export function resolveSocialOnlyHardLock(args: {
     (base.active || classified.blockBusinessEngines || socialEmotion || Boolean(contextual)) && !hasCommercial;
   const hardLock = active || classified.blockBusinessEngines;
 
+  console.log("[SOCIAL_ONLY_INPUT]", {
+    message: msg.slice(0, 60),
+    signal,
+    intentKind: intent.kind,
+    classifiedIntent: classified.intent,
+    classifiedBlockEngines: classified.blockBusinessEngines,
+    baseActive: base.active,
+    socialEmotion,
+    hasContextual: Boolean(contextual),
+    hasCommercial,
+    active,
+    hardLock,
+  });
+
   return {
     active,
     hardLock,
@@ -155,6 +191,8 @@ export function resolveSocialOnlyHardLock(args: {
           args.businessName ?? "notre boutique",
           args.agentName ?? "Conseiller",
           emotion.requires_empathy,
+          intent.kind,
+          args.personaKey,
         )
       : null,
   };

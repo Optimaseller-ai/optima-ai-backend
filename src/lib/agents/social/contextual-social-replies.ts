@@ -8,6 +8,7 @@ import { getAgentPersonalityProfile } from "@/lib/agents/personality/persona-pro
 import { buildHesitationReply, isHesitationSignalMessage } from "./hesitation-signal-engine";
 import { buildHumanSocialGreetingReply } from "./human-social-replies";
 import { detectSocialSignal } from "./social-signal-detector";
+import { detectSocialIntent } from "@/lib/agents/human-behavior/social-intent-engine";
 import {
   SOCIAL_DAY_OR_MOOD,
   SOCIAL_PERSONAL_ACTIVITY,
@@ -241,6 +242,13 @@ function buildLegacyContextualPatterns(input: ContextualSocialReplyInput, raw: s
 
   const honor = frenchHonorificSmart(input.prospectProfile);
   const honorSuffix = honor ? ` ${honor}` : "";
+
+  const identityIntent = detectSocialIntent(raw).kind;
+  if (identityIntent === "identity_request") {
+    const biz = input.businessName.trim() || "notre boutique";
+    const name = input.agentName || "Conseiller";
+    return `Je suis ${name} du service client chez ${biz}${smile}`;
+  }
 
   if (/\b(tu|vous)\s+d[ée]range/i.test(raw)) {
     return `Oh ${agentApologyFr(input.personaKey)} si je vous ai dérangé${honorSuffix}${smile}.`;

@@ -12,6 +12,7 @@ export type SocialIntentKind =
   | "humor"
   | "teasing"
   | "curiosity"
+  | "identity_request"
   | "product_request"
   | "purchase"
   | "frustration"
@@ -26,6 +27,9 @@ const SOCIAL_CHAT =
 
 const HUMOR = /\b(lol|mdr|ptdr|haha|😂|🤣|je\s+rigole|tu\s+me\s+fais\s+rire)\b/i;
 const TEASING = /\b(tu\s+vas\s+finir\s+par\s+me\s+convaincre|arrête\s+de\s+vendre|stop\s+selling|ya\s+plus\s+personne)\b/i;
+
+const IDENTITY_REQUEST =
+  /\b(tu\s+es\s+qui|qui\s+es[\s-]?tu|c['']?est\s+quoi\s+ton\s+r[ôo]le|quel\s+est\s+ton\s+r[ôo]le|tu\s+travailles\s+pour\s+qui|tu\s+bosses\s+pour\s+qui|vous\s+êtes\s+qui|qui\s+êtes[\s-]?vous|c['']?est\s+quoi\s+ton\s+(boulot|job|travail)|who\s+are\s+you|what['']?s\s+your\s+(role|job)|who\s+do\s+you\s+work\s+for|qui[eé]n\s+eres|cu[aá]l\s+es\s+tu\s+(rol|trabajo))\b/i;
 
 const PRODUCT =
   /\b(prix|stock|dispo|disponible|livraison|commander|acheter|modèle|taille|couleur|article|iphone|samsung|nike|have\s+you\s+got|do\s+you\s+have|precio|disponible|pedido)\b/i;
@@ -74,6 +78,10 @@ export function detectSocialIntent(
   }
   if (PRODUCT.test(t)) {
     return { kind: "product_request", blockWelcomeReplay: true, forbidSupportMode: false };
+  }
+  if (IDENTITY_REQUEST.test(t)) {
+    console.log("[IDENTITY_REQUEST_DETECTED]", { message: raw.slice(0, 80), kind: "identity_request" });
+    return { kind: "identity_request", blockWelcomeReplay: true, forbidSupportMode: true };
   }
   if (PERSONAL_Q.test(t) || (mentionsAgentByName(raw, opts?.agentName) && /\?/.test(raw) && t.length < 80)) {
     return { kind: "personal_question", blockWelcomeReplay: true, forbidSupportMode: true };
@@ -144,7 +152,9 @@ export function formatSocialIntentPromptBlock(result: SocialIntentResult, lang: 
       forbidWelcome ? "- FORBIDDEN: “welcome to …”, business presentation, first-contact opener — conversation already live." : null,
       result.kind === "personal_question"
         ? "- They asked what you’re doing — answer like a real person at work (short), not a support bot."
-        : null,
+        : result.kind === "identity_request"
+          ? "- They asked who you are / your role — answer naturally: name + company + what you do."
+          : null,
     ]
       .filter(Boolean)
       .join("\n");
@@ -167,7 +177,9 @@ export function formatSocialIntentPromptBlock(result: SocialIntentResult, lang: 
       : null,
     result.kind === "personal_question"
       ? "- Question personnelle (« tu fais quoi ? ») : répondre comme une vraie personne au travail — court, naturel — pas support."
-      : result.kind === "social_chat"
+      : result.kind === "identity_request"
+        ? "- Demande d'identité (« tu es qui ? ») : répondre avec nom + entreprise + rôle — naturel, pas commercial."
+        : result.kind === "social_chat"
         ? "- Discussion sociale : ton WhatsApp réel, pas standard téléphonique."
         : null,
   ]

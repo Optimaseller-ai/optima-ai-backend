@@ -917,6 +917,19 @@ export async function generateAIReply(args: {
   }
 
   // Quick/social replies are allowed only when we are not running the main LLM pipeline.
+  console.log("[SOCIAL_ONLY_INPUT]", {
+    request_id: args.replyTurn?.request_id,
+    message: message.slice(0, 60),
+    socialOnly,
+    blockBusinessEngines,
+    hasQuick: Boolean(quick),
+    hasSocialConversationReply: Boolean(socialConversation.reply),
+    hasHardLockFallback: Boolean(socialHardLock.fallbackReply),
+    hasSocialLayerInstant: Boolean(socialLayer?.instantReply),
+    conversationIntent: conversationIntent.intent,
+    conversationSignal: conversationIntent.signal,
+  });
+
   if (!forceMainPipeline && allowSocialHumanization && (quick || (socialOnly && blockBusinessEngines))) {
     const rawQuick =
       quick ??
@@ -940,6 +953,10 @@ export async function generateAIReply(args: {
             agentName: sellerProfile.agentName,
             kind: emotionProfile.requires_empathy ? "empathy" : "greeting",
           }));
+    console.log("[PERSONALITY_BEFORE_SOCIAL]", {
+      request_id: args.replyTurn?.request_id,
+      rawQuick: rawQuick.slice(0, 120),
+    });
     const polishedRun = safeEngineExecuteSync({
       engine: "post_process",
       step: "humanization",
@@ -956,6 +973,20 @@ export async function generateAIReply(args: {
       socialOnly: true,
     });
     const polished = polishedEnsured.reply;
+    if (polishedEnsured.source !== "original") {
+      console.log("[RESPONSE_COMPRESSED]", {
+        request_id: args.replyTurn?.request_id,
+        source: polishedEnsured.source,
+        originalPreview: polishedRaw.slice(0, 80),
+        finalPreview: polished.slice(0, 80),
+        reason: polishedEnsured.validation?.reason,
+      });
+    }
+    console.log("[PERSONALITY_AFTER_SOCIAL]", {
+      request_id: args.replyTurn?.request_id,
+      polished: polished.slice(0, 120),
+      validationSource: polishedEnsured.source,
+    });
     for (const log of transformLogs) {
       dbg?.recordStep({
         step: "humanization",
@@ -986,6 +1017,12 @@ export async function generateAIReply(args: {
       if (!owned) {
         return { reply: "", replyOwnership: undefined, socialOnlyMode: true };
       }
+      console.log("[SOCIAL_ONLY_OUTPUT]", {
+        request_id: args.replyTurn?.request_id,
+        reply: owned.reply.slice(0, 120),
+        source: "polished_owned",
+        validationSource: polishedEnsured.source,
+      });
       return {
         reply: owned.reply,
         replyOwnership: owned,
@@ -994,6 +1031,12 @@ export async function generateAIReply(args: {
         socialOnlyMode: true,
       };
     }
+    console.log("[SOCIAL_ONLY_OUTPUT]", {
+      request_id: args.replyTurn?.request_id,
+      reply: polished.slice(0, 120),
+      source: "polished_direct",
+      validationSource: polishedEnsured.source,
+    });
     return {
       reply: polished,
       socialSupervisorInsights: socialLayer?.supervisor,
@@ -1029,6 +1072,17 @@ export async function generateAIReply(args: {
             agentName: sellerProfile.agentName,
             kind: "greeting",
           }));
+    console.log("[SOCIAL_ONLY_INPUT]", {
+      request_id: args.replyTurn?.request_id,
+      message: message.slice(0, 60),
+      path: "instant_social_blockBusinessEngines",
+      raw: raw.slice(0, 120),
+      conversationIntent: conversationIntent.intent,
+    });
+    console.log("[PERSONALITY_BEFORE_SOCIAL]", {
+      request_id: args.replyTurn?.request_id,
+      raw: raw.slice(0, 120),
+    });
     const polishedRun = safeEngineExecuteSync({
       engine: "post_process",
       step: "humanization",
@@ -1045,6 +1099,20 @@ export async function generateAIReply(args: {
       socialOnly: true,
     });
     const polishedSocial = polishedSocialEnsured.reply;
+    if (polishedSocialEnsured.source !== "original") {
+      console.log("[RESPONSE_COMPRESSED]", {
+        request_id: args.replyTurn?.request_id,
+        source: polishedSocialEnsured.source,
+        originalPreview: polishedSocialRaw.slice(0, 80),
+        finalPreview: polishedSocial.slice(0, 80),
+        reason: polishedSocialEnsured.validation?.reason,
+      });
+    }
+    console.log("[PERSONALITY_AFTER_SOCIAL]", {
+      request_id: args.replyTurn?.request_id,
+      polished: polishedSocial.slice(0, 120),
+      validationSource: polishedSocialEnsured.source,
+    });
     if (replyManager) {
       replyManager.submitCandidate({
         reply: polishedSocial,
@@ -1055,6 +1123,12 @@ export async function generateAIReply(args: {
       if (!owned) {
         return { reply: "", replyOwnership: undefined, socialOnlyMode: true };
       }
+      console.log("[SOCIAL_ONLY_OUTPUT]", {
+        request_id: args.replyTurn?.request_id,
+        reply: owned.reply.slice(0, 120),
+        source: "social_candidate_owned",
+        validationSource: polishedSocialEnsured.source,
+      });
       return {
         reply: owned.reply,
         replyOwnership: owned,
@@ -1062,6 +1136,12 @@ export async function generateAIReply(args: {
         socialOnlyMode: true,
       };
     }
+    console.log("[SOCIAL_ONLY_OUTPUT]", {
+      request_id: args.replyTurn?.request_id,
+      reply: polishedSocial.slice(0, 120),
+      source: "social_candidate_direct",
+      validationSource: polishedSocialEnsured.source,
+    });
     return {
       reply: polishedSocial,
       socialSupervisorInsights: socialLayer?.supervisor,

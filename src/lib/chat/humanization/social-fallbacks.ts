@@ -4,14 +4,12 @@ const BANNED =
   /\b(comment puis-je|je peux vous aider|que recherchez|cherchez-vous|dites-moi ce que vous cherchez|votre budget|je suis une ia|en tant qu'ia)\b/i;
 
 const FR_POOL = [
-  "Salut 🙂",
-  "Bonsoir",
-  "Cc 😄",
-  "Oui ?",
+  "Salut 🙂 — je suis là si besoin",
+  "Bonsoir 👋",
+  "Je suis là 🙂",
+  "Je vous écoute",
   "Je vois 😄",
   "Hey salut",
-  "Bonsoir 👋",
-  "D'accord 🙂",
   "Bien reçu",
 ] as const;
 

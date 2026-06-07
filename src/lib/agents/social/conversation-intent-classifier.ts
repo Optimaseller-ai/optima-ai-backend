@@ -183,6 +183,15 @@ export function classifyConversationIntent(args: {
     };
   }
 
+  if (socialIntent.kind === "identity_request") {
+    return {
+      intent: "curiosity",
+      blockBusinessEngines: true,
+      signal: "identity_request",
+      reasoning: "identity_request_detected",
+    };
+  }
+
   if (socialIntent.kind === "personal_question" || socialIntent.kind === "curiosity" || /\?/.test(msg)) {
     return {
       intent: "curiosity",
