@@ -97,6 +97,7 @@ import {
 } from "@/lib/agents/human-behavior/human-short-reply-engine";
 import type { ConversationPipelineDebugger } from "@/lib/chat/pipeline/conversation-pipeline-debugger";
 import { resolveSocialOnlyHardLock } from "@/lib/chat/pipeline/social-only-hard-lock";
+import { isValidSocialReply, repairSocialReply } from "@/lib/agents/social/identity-response-builder";
 import { safeEngineExecute, safeEngineExecuteSync } from "@/lib/chat/pipeline/safe-engine-executor";
 import {
   sanitizeConversationStateForLlm,
@@ -972,7 +973,7 @@ export async function generateAIReply(args: {
       lang: langForSocial,
       socialOnly: true,
     });
-    const polished = polishedEnsured.reply;
+    let polished = polishedEnsured.reply;
     if (polishedEnsured.source !== "original") {
       console.log("[RESPONSE_COMPRESSED]", {
         request_id: args.replyTurn?.request_id,
@@ -986,6 +987,48 @@ export async function generateAIReply(args: {
       request_id: args.replyTurn?.request_id,
       polished: polished.slice(0, 120),
       validationSource: polishedEnsured.source,
+    });
+
+    if (!isValidSocialReply(polished)) {
+      console.log("[SOCIAL_REPLY_REJECTED]", {
+        request_id: args.replyTurn?.request_id,
+        reply: polished.slice(0, 80),
+        reason: "invalid_social_reply",
+      });
+      const repaired = repairSocialReply(polished, langForSocial);
+      console.log("[SOCIAL_REPLY_REPAIRED]", {
+        request_id: args.replyTurn?.request_id,
+        before: polished.slice(0, 80),
+        after: repaired,
+      });
+      polished = repaired;
+    }
+
+    console.log("[PERSONALITY_IN]", {
+      request_id: args.replyTurn?.request_id,
+      agentName: sellerProfile.agentName,
+      personaKey: args.personaKey,
+      socialOnly,
+      blockBusinessEngines,
+      conversationIntent: conversationIntent.intent,
+    });
+    console.log("[PERSONALITY_OUT]", {
+      request_id: args.replyTurn?.request_id,
+      finalReply: polished.slice(0, 120),
+    });
+    console.log("[SOCIAL_ENGINE_AUDIT]", {
+      request_id: args.replyTurn?.request_id,
+      intent_detected: conversationIntent.intent,
+      signal_detected: conversationIntent.signal,
+      personality_used: args.personaKey,
+      agent_name: sellerProfile.agentName,
+      business_name: sellerProfile.businessName,
+      fallback_used: polishedEnsured.source !== "original" ? polishedEnsured.source : "none",
+      identity_used: conversationIntent.signal === "identity_request",
+      response_length: polished.length,
+      response_valid: isValidSocialReply(polished),
+      social_only_mode: socialOnly,
+      block_business_engines: blockBusinessEngines,
     });
     for (const log of transformLogs) {
       dbg?.recordStep({
@@ -1098,7 +1141,7 @@ export async function generateAIReply(args: {
       lang: langForSocial,
       socialOnly: true,
     });
-    const polishedSocial = polishedSocialEnsured.reply;
+    let polishedSocial = polishedSocialEnsured.reply;
     if (polishedSocialEnsured.source !== "original") {
       console.log("[RESPONSE_COMPRESSED]", {
         request_id: args.replyTurn?.request_id,
@@ -1113,6 +1156,37 @@ export async function generateAIReply(args: {
       polished: polishedSocial.slice(0, 120),
       validationSource: polishedSocialEnsured.source,
     });
+
+    if (!isValidSocialReply(polishedSocial)) {
+      console.log("[SOCIAL_REPLY_REJECTED]", {
+        request_id: args.replyTurn?.request_id,
+        reply: polishedSocial.slice(0, 80),
+        reason: "invalid_social_reply",
+      });
+      const repaired = repairSocialReply(polishedSocial, langForSocial);
+      console.log("[SOCIAL_REPLY_REPAIRED]", {
+        request_id: args.replyTurn?.request_id,
+        before: polishedSocial.slice(0, 80),
+        after: repaired,
+      });
+      polishedSocial = repaired;
+    }
+
+    console.log("[SOCIAL_ENGINE_AUDIT]", {
+      request_id: args.replyTurn?.request_id,
+      intent_detected: conversationIntent.intent,
+      signal_detected: conversationIntent.signal,
+      personality_used: args.personaKey,
+      agent_name: sellerProfile.agentName,
+      business_name: sellerProfile.businessName,
+      fallback_used: polishedSocialEnsured.source !== "original" ? polishedSocialEnsured.source : "none",
+      identity_used: conversationIntent.signal === "identity_request",
+      response_length: polishedSocial.length,
+      response_valid: isValidSocialReply(polishedSocial),
+      social_only_mode: true,
+      block_business_engines: true,
+    });
+
     if (replyManager) {
       replyManager.submitCandidate({
         reply: polishedSocial,

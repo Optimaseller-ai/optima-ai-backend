@@ -9,6 +9,7 @@ import { buildHesitationReply, isHesitationSignalMessage } from "./hesitation-si
 import { buildHumanSocialGreetingReply } from "./human-social-replies";
 import { detectSocialSignal } from "./social-signal-detector";
 import { detectSocialIntent } from "@/lib/agents/human-behavior/social-intent-engine";
+import { buildIdentityResponse } from "./identity-response-builder";
 import {
   SOCIAL_DAY_OR_MOOD,
   SOCIAL_PERSONAL_ACTIVITY,
@@ -245,9 +246,13 @@ function buildLegacyContextualPatterns(input: ContextualSocialReplyInput, raw: s
 
   const identityIntent = detectSocialIntent(raw).kind;
   if (identityIntent === "identity_request") {
-    const biz = input.businessName.trim() || "notre boutique";
-    const name = input.agentName || "Conseiller";
-    return `Je suis ${name} du service client chez ${biz}${smile}`;
+    return buildIdentityResponse({
+      agentName: input.agentName,
+      businessName: input.businessName,
+      personaKey: input.personaKey,
+      lang: "fr",
+      allowEmoji: input.allowEmoji,
+    });
   }
 
   if (/\b(tu|vous)\s+d[ée]range/i.test(raw)) {

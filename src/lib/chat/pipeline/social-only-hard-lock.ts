@@ -6,6 +6,7 @@ import { runSocialConversationEngine } from "@/lib/agents/social/social-conversa
 import { detectSocialSignal, isSocialSignalKind } from "@/lib/agents/social/social-signal-detector";
 import { detectSocialIntent } from "@/lib/agents/human-behavior/social-intent-engine";
 import { isHesitationSignalMessage } from "@/lib/agents/social/hesitation-signal-engine";
+import { buildIdentityResponse, computeIdentityStyleFingerprint } from "@/lib/agents/social/identity-response-builder";
 import type { SellerBehaviorConversationState } from "@/lib/agents/memory/conversation-state";
 import { resolveSocialOnlyMode } from "./social-only-mode";
 import { lockedLanguageFallback } from "./session-language-lock";
@@ -36,15 +37,26 @@ function identityResponse(
   businessName: string,
   personaKey?: string | null,
 ): string {
-  const displayName = agentName || "Conseiller";
-  const biz = businessName || "notre boutique";
-  if (lang === "en") {
-    return `I'm ${displayName} from ${biz} — I handle customer service here 🙂`;
-  }
-  if (lang === "es") {
-    return `Soy ${displayName} de ${biz} — estoy aquí para ayudarle 🙂`;
-  }
-  return `Je suis ${displayName} du service client chez ${biz} 🙂`;
+  const fingerprint = computeIdentityStyleFingerprint(personaKey ?? agentName);
+  console.log("[IDENTITY_STYLE_SELECTED]", {
+    personaKey,
+    agentName,
+    fingerprint,
+    styleIndex: fingerprint % 6,
+  });
+  const reply = buildIdentityResponse({
+    agentName,
+    businessName,
+    personaKey,
+    lang,
+    allowEmoji: true,
+  });
+  console.log("[IDENTITY_RESPONSE_BUILT]", {
+    personaKey,
+    agentName,
+    reply: reply.slice(0, 120),
+  });
+  return reply;
 }
 
 function minimalSocialFallback(
